@@ -4,9 +4,6 @@ require_once __DIR__ . '/../includes/auth.php';
 
 verificarAdmin();
 
-$erro = '';
-$sucesso = '';
-
 $id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 
 if (!$id) {
@@ -14,34 +11,37 @@ if (!$id) {
     exit;
 }
 
-$stmt = $pdo->prepare("SELECT * FROM usuarios WHERE id = ? LIMIT 1");
-$stmt->execute([$id]);
-$usuario = $stmt->fetch(PDO::FETCH_ASSOC);
+$erro = '';
+$sucesso = '';
 
-if (!$usuario) {
+// Buscar dados do usuário
+$stmt = $pdo->prepare("SELECT * FROM usuarios WHERE id = ?");
+$stmt->execute([$id]);
+$cliente = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$cliente) {
     header('Location: /clientes');
     exit;
 }
 
+// Atualizar dados
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $nome     = trim($_POST['nome'] ?? '');
-    $cpf      = trim($_POST['cpf'] ?? '');
-    $email    = trim($_POST['email'] ?? '');
+    $nome = trim($_POST['nome'] ?? '');
+    $cpf = trim($_POST['cpf'] ?? '');
+    $email = trim($_POST['email'] ?? '');
     $telefone = trim($_POST['telefone'] ?? '');
     $endereco = trim($_POST['endereco'] ?? '');
-    $tipo     = $_POST['tipo'] ?? 'cliente';
-    $senha    = $_POST['senha'] ?? '';
+    $novaSenha = $_POST['nova_senha'] ?? '';
 
     if ($nome === '' || $cpf === '') {
-        $erro = 'Nome e CPF são campos obrigatórios.';
-    } elseif (!in_array($tipo, ['cliente', 'admin'], true)) {
-        $erro = 'Tipo de perfil inválido.';
+        $erro = 'Nome e CPF são obrigatórios.';
     } else {
         $cpfLimpo = preg_replace('/[^0-9]/', '', $cpf);
 
         if (strlen($cpfLimpo) !== 11) {
-            $erro = 'CPF inválido.';
+            $erro = 'Informe um CPF válido.';
         } else {
+            // Verificar duplicidade de CPF em outro usuário
             $stmtCheck = $pdo->prepare("
                 SELECT id
                 FROM usuarios
@@ -54,24 +54,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ' ',
                     ''
                 ) = ?
-                AND id <> ?
+                AND id != ?
                 LIMIT 1
             ");
 
-            $stmtCheck->execute([$cpfLimpo, $id]);
+            $stmtCheck->execute([
+                $cpfLimpo,
+                $id
+            ]);
 
-            if ($stmtCheck->fetch(PDO::FETCH_ASSOC)) {
-                $erro = 'Este CPF já está cadastrado para outro usuário.';
+            if ($stmtCheck->fetch()) {
+                $erro = 'Este CPF já pertence a outro usuário cadastrado.';
             } else {
                 try {
-                    if ($senha !== '') {
-                        $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
+                    if ($novaSenha !== '') {
+                        $senhaHash = password_hash(
+                            $novaSenha,
+                            PASSWORD_DEFAULT
+                        );
 
-                        if ($senhaHash === false) {
-                            throw new RuntimeException('Não foi possível proteger a senha.');
-                        }
-
-                        $stmtUpdate = $pdo->prepare("
+                        $stmtUp = $pdo->prepare("
                             UPDATE usuarios
                             SET
                                 nome = ?,
@@ -79,207 +81,214 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 email = ?,
                                 telefone = ?,
                                 endereco = ?,
-                                senha = ?,
-                                tipo = ?
+                                senha = ?
                             WHERE id = ?
                         ");
 
-                        $stmtUpdate->execute([
+                        $stmtUp->execute([
                             $nome,
                             $cpf,
                             $email !== '' ? $email : null,
                             $telefone !== '' ? $telefone : null,
                             $endereco !== '' ? $endereco : null,
                             $senhaHash,
-                            $tipo,
                             $id
                         ]);
                     } else {
-                        $stmtUpdate = $pdo->prepare("
+                        $stmtUp = $pdo->prepare("
                             UPDATE usuarios
                             SET
                                 nome = ?,
                                 cpf = ?,
                                 email = ?,
                                 telefone = ?,
-                                endereco = ?,
-                                tipo = ?
+                                endereco = ?
                             WHERE id = ?
                         ");
 
-                        $stmtUpdate->execute([
+                        $stmtUp->execute([
                             $nome,
                             $cpf,
                             $email !== '' ? $email : null,
                             $telefone !== '' ? $telefone : null,
                             $endereco !== '' ? $endereco : null,
-                            $tipo,
                             $id
                         ]);
                     }
 
-                    header('Location: /cliente-editar?id=' . $id . '&sucesso=1');
-                    exit;
+                    $sucesso = 'Dados atualizados com sucesso!';
+
+                    // Recarregar dados atualizados
+                    $stmt->execute([$id]);
+                    $cliente = $stmt->fetch(PDO::FETCH_ASSOC);
+
                 } catch (PDOException $e) {
-                    $erro = 'Erro ao atualizar cliente.';
-                } catch (RuntimeException $e) {
-                    $erro = 'Erro ao atualizar cliente.';
+                    $erro = 'Erro ao atualizar dados.';
                 }
             }
         }
     }
-
-    $usuario['nome'] = $nome;
-    $usuario['cpf'] = $cpf;
-    $usuario['email'] = $email;
-    $usuario['telefone'] = $telefone;
-    $usuario['endereco'] = $endereco;
-    $usuario['tipo'] = $tipo;
-}
-
-if (isset($_GET['sucesso']) && $_GET['sucesso'] === '1') {
-    $sucesso = 'Cliente atualizado com sucesso.';
 }
 
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
 <div class="container my-3 my-md-4">
+
     <div class="row justify-content-center">
         <div class="col-12 col-md-10 col-lg-8">
 
             <div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-3 mb-4">
+
                 <div class="flex-grow-1">
                     <h3 class="fw-bold m-0 text-nowrap">
-                        <i class="bi bi-person-gear me-2 text-primary"></i>Editar Cliente
+                        <i class="bi bi-pencil-square me-2 text-primary"></i>
+                        Editar Usuário
                     </h3>
+
                     <p class="text-muted m-0 small">
-                        Atualize os dados do cliente ou usuário
+                        Atualize as informações cadastrais
                     </p>
                 </div>
 
                 <div>
-                    <a href="/clientes" class="btn btn-outline-secondary btn-sm fw-bold text-nowrap">
-                        <i class="bi bi-arrow-left me-1"></i> Voltar para Clientes
+                    <a
+                        href="/clientes"
+                        class="btn btn-outline-secondary btn-sm fw-bold text-nowrap"
+                    >
+                        <i class="bi bi-arrow-left me-1"></i>
+                        Voltar para Clientes
                     </a>
                 </div>
+
             </div>
 
-            <?php if ($erro): ?>
-                <div class="alert alert-danger alert-dismissible fade show border-0 shadow-sm mb-3">
-                    <?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            <?php if ($sucesso !== ''): ?>
+                <div
+                    class="alert alert-success alert-dismissible fade show border-0 shadow-sm"
+                    role="alert"
+                >
+                    <?= htmlspecialchars($sucesso, ENT_QUOTES, 'UTF-8') ?>
+
+                    <button
+                        type="button"
+                        class="btn-close"
+                        data-bs-dismiss="alert"
+                    ></button>
                 </div>
             <?php endif; ?>
 
-            <?php if ($sucesso): ?>
-                <div class="alert alert-success alert-dismissible fade show border-0 shadow-sm mb-3">
-                    <?= htmlspecialchars($sucesso, ENT_QUOTES, 'UTF-8') ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            <?php if ($erro !== ''): ?>
+                <div
+                    class="alert alert-danger alert-dismissible fade show border-0 shadow-sm"
+                    role="alert"
+                >
+                    <?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
+
+                    <button
+                        type="button"
+                        class="btn-close"
+                        data-bs-dismiss="alert"
+                    ></button>
                 </div>
             <?php endif; ?>
 
             <div class="card border-0 shadow-sm p-3 p-md-4">
 
-                <form method="POST" action="/cliente-editar?id=<?= (int) $id ?>">
+                <form method="POST" action="">
 
                     <div class="row g-3">
 
                         <div class="col-md-6">
-                            <label class="form-label fw-bold">Nome Completo *</label>
+                            <label class="form-label fw-bold">
+                                Nome Completo *
+                            </label>
+
                             <input
                                 type="text"
                                 name="nome"
                                 class="form-control"
-                                placeholder="Ex: João da Silva"
-                                value="<?= htmlspecialchars($usuario['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                value="<?= htmlspecialchars($cliente['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 required
                             >
                         </div>
 
                         <div class="col-md-6">
-                            <label class="form-label fw-bold">CPF (Login do Cliente) *</label>
+                            <label class="form-label fw-bold">
+                                CPF (Login) *
+                            </label>
+
                             <input
                                 type="text"
                                 name="cpf"
                                 class="form-control mask-cpf"
                                 inputmode="numeric"
-                                placeholder="000.000.000-00"
-                                value="<?= htmlspecialchars($usuario['cpf'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                value="<?= htmlspecialchars($cliente['cpf'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 required
                             >
                         </div>
 
                         <div class="col-md-6">
-                            <label class="form-label fw-bold">E-mail</label>
+                            <label class="form-label fw-bold">
+                                E-mail
+                            </label>
+
                             <input
                                 type="email"
                                 name="email"
                                 class="form-control"
-                                placeholder="exemplo@email.com"
-                                value="<?= htmlspecialchars($usuario['email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                value="<?= htmlspecialchars($cliente['email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                             >
                         </div>
 
                         <div class="col-md-6">
-                            <label class="form-label fw-bold">Telefone / WhatsApp</label>
+                            <label class="form-label fw-bold">
+                                Telefone / WhatsApp
+                            </label>
+
                             <input
                                 type="text"
                                 name="telefone"
                                 class="form-control mask-phone"
                                 inputmode="numeric"
-                                placeholder="(00) 00000-0000"
-                                value="<?= htmlspecialchars($usuario['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                value="<?= htmlspecialchars($cliente['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                             >
                         </div>
 
-                        <div class="col-md-8">
-                            <label class="form-label fw-bold">Endereço Residencial</label>
+                        <div class="col-12">
+                            <label class="form-label fw-bold">
+                                Endereço Residencial
+                            </label>
+
                             <input
                                 type="text"
                                 name="endereco"
                                 class="form-control"
-                                placeholder="Rua, Número, Bairro"
-                                value="<?= htmlspecialchars($usuario['endereco'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                value="<?= htmlspecialchars($cliente['endereco'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                             >
-                        </div>
-
-                        <div class="col-md-4">
-                            <label class="form-label fw-bold">Tipo de Perfil *</label>
-                            <select name="tipo" class="form-select">
-                                <option
-                                    value="cliente"
-                                    <?= (($usuario['tipo'] ?? 'cliente') === 'cliente') ? 'selected' : '' ?>
-                                >
-                                    Cliente
-                                </option>
-
-                                <option
-                                    value="admin"
-                                    <?= (($usuario['tipo'] ?? '') === 'admin') ? 'selected' : '' ?>
-                                >
-                                    Administrador
-                                </option>
-                            </select>
                         </div>
 
                         <hr class="my-4">
 
                         <h6 class="fw-bold text-muted m-0">
-                            <i class="bi bi-key me-1"></i>Alterar Senha
+                            <i class="bi bi-key me-1"></i>
+                            Redefinir Senha de Acesso
                         </h6>
 
-                        <small class="text-muted d-block mb-1">
-                            Deixe em branco para manter a senha atual.
+                        <small class="text-muted d-block mb-2">
+                            Preencha apenas se desejar alterar a senha do usuário.
                         </small>
 
                         <div class="col-md-6">
-                            <label class="form-label fw-bold">Nova Senha</label>
+                            <label class="form-label fw-bold">
+                                Nova Senha
+                            </label>
+
                             <input
                                 type="password"
-                                name="senha"
+                                name="nova_senha"
                                 class="form-control"
-                                placeholder="Digite uma nova senha"
+                                placeholder="Deixe em branco para manter a atual"
                                 autocomplete="new-password"
                             >
                         </div>
@@ -289,7 +298,8 @@ require_once __DIR__ . '/../includes/header.php';
                                 type="submit"
                                 class="btn btn-primary fw-bold px-4 w-100 w-sm-auto"
                             >
-                                <i class="bi bi-check-lg me-1"></i> Salvar Alterações
+                                <i class="bi bi-check-lg me-1"></i>
+                                Salvar Alterações
                             </button>
                         </div>
 
@@ -298,8 +308,10 @@ require_once __DIR__ . '/../includes/header.php';
                 </form>
 
             </div>
+
         </div>
     </div>
+
 </div>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

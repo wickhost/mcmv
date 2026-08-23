@@ -1,214 +1,204 @@
 <?php
+require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Cliente deve acessar somente o portal
+if (($_SESSION['usuario_tipo'] ?? '') === 'cliente') {
+    header('Location: /portal');
+    exit;
+}
+
 verificarAdmin();
 
-require_once __DIR__ . '/../config/database.php';
-require_once __DIR__ . '/../includes/header.php';
+$totalClientes = (int)$pdo
+    ->query("SELECT COUNT(*) FROM usuarios WHERE tipo = 'cliente'")
+    ->fetchColumn();
 
-$stmtClientes = $pdo->query("SELECT COUNT(*) FROM usuarios WHERE tipo = 'cliente'");
-$totalClientes = (int) $stmtClientes->fetchColumn();
+$totalObras = (int)$pdo
+    ->query("SELECT COUNT(*) FROM obras")
+    ->fetchColumn();
 
-$stmtObras = $pdo->query("SELECT COUNT(*) FROM obras");
-$totalObras = (int) $stmtObras->fetchColumn();
+$totalModelos = (int)$pdo
+    ->query("SELECT COUNT(*) FROM modelos_casas")
+    ->fetchColumn();
 
-$stmtObrasAndamento = $pdo->query("
-    SELECT COUNT(*)
-    FROM obras
-    WHERE status != 'Concluída'
-");
-$totalObrasAndamento = (int) $stmtObrasAndamento->fetchColumn();
-
-$stmtObrasConcluidas = $pdo->query("
-    SELECT COUNT(*)
-    FROM obras
-    WHERE status = 'Concluída'
-");
-$totalObrasConcluidas = (int) $stmtObrasConcluidas->fetchColumn();
-
-$stmtObrasRecentes = $pdo->query("
+$stmtObras = $pdo->query("
     SELECT
         o.id,
-        o.nome_obra,
-        o.status,
-        o.progresso,
-        u.nome AS cliente_nome
+        o.endereco_obra,
+        COALESCE(o.progresso_total, 0) AS progresso_total,
+        u.nome AS nome_cliente
     FROM obras o
-    LEFT JOIN usuarios u ON u.id = o.cliente_id
+    INNER JOIN usuarios u ON u.id = o.cliente_id
     ORDER BY o.id DESC
-    LIMIT 5
+    LIMIT 10
 ");
-$obrasRecentes = $stmtObrasRecentes->fetchAll(PDO::FETCH_ASSOC);
+
+$obrasRecentes = $stmtObras->fetchAll(PDO::FETCH_ASSOC);
+
+require_once __DIR__ . '/../includes/header.php';
 ?>
 
-<div class="container">
+<div class="container my-3 my-md-4">
 
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
         <div>
-            <h2 class="fw-bold mb-1">
+            <h3 class="fw-bold m-0">
                 <i class="bi bi-speedometer2 text-primary me-2"></i>
-                Dashboard
-            </h2>
-            <p class="text-muted mb-0">
-                Visão geral da gestão de obras
+                Painel Administrativo
+            </h3>
+
+            <p class="text-muted small m-0">
+                Visão geral do sistema de obras e acompanhamento de clientes
             </p>
         </div>
 
-        <a href="/nova-obra" class="btn btn-primary mt-3 mt-md-0">
-            <i class="bi bi-plus-circle me-1"></i>
-            Nova Obra
-        </a>
+        <div>
+            <a href="/nova-obra" class="btn btn-primary fw-bold w-100 w-md-auto">
+                <i class="bi bi-plus-lg me-1"></i>
+                Nova Obra
+            </a>
+        </div>
     </div>
 
     <div class="row g-3 mb-4">
 
-        <div class="col-6 col-lg-3">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <div class="text-muted small">Clientes</div>
-                            <div class="fs-3 fw-bold"><?= $totalClientes ?></div>
-                        </div>
-                        <div class="text-primary fs-2">
-                            <i class="bi bi-people-fill"></i>
-                        </div>
-                    </div>
-                    <a href="/clientes" class="small text-decoration-none">
-                        Ver clientes
-                    </a>
-                </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+            <div class="card border-0 shadow-sm p-3 border-start border-4 border-primary h-100">
+                <small class="text-muted fw-bold">TOTAL DE CLIENTES</small>
+
+                <h3 class="fw-bold text-dark m-0 mt-1">
+                    <?= $totalClientes ?>
+                </h3>
             </div>
         </div>
 
-        <div class="col-6 col-lg-3">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <div class="text-muted small">Total de Obras</div>
-                            <div class="fs-3 fw-bold"><?= $totalObras ?></div>
-                        </div>
-                        <div class="text-primary fs-2">
-                            <i class="bi bi-building-fill"></i>
-                        </div>
-                    </div>
-                </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+            <div class="card border-0 shadow-sm p-3 border-start border-4 border-success h-100">
+                <small class="text-muted fw-bold">OBRAS EM ANDAMENTO</small>
+
+                <h3 class="fw-bold text-dark m-0 mt-1">
+                    <?= $totalObras ?>
+                </h3>
             </div>
         </div>
 
-        <div class="col-6 col-lg-3">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <div class="text-muted small">Em Andamento</div>
-                            <div class="fs-3 fw-bold"><?= $totalObrasAndamento ?></div>
-                        </div>
-                        <div class="text-warning fs-2">
-                            <i class="bi bi-hourglass-split"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+            <div class="card border-0 shadow-sm p-3 border-start border-4 border-warning h-100">
+                <small class="text-muted fw-bold">MODELOS CADASTRADOS</small>
 
-        <div class="col-6 col-lg-3">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <div class="text-muted small">Concluídas</div>
-                            <div class="fs-3 fw-bold"><?= $totalObrasConcluidas ?></div>
-                        </div>
-                        <div class="text-success fs-2">
-                            <i class="bi bi-check-circle-fill"></i>
-                        </div>
-                    </div>
-                </div>
+                <h3 class="fw-bold text-dark m-0 mt-1">
+                    <?= $totalModelos ?>
+                </h3>
             </div>
         </div>
 
     </div>
 
-    <div class="card border-0 shadow-sm">
-        <div class="card-header bg-white py-3">
-            <h5 class="mb-0 fw-bold">
-                <i class="bi bi-clock-history me-2"></i>
-                Obras Recentes
-            </h5>
-        </div>
+    <div class="card border-0 shadow-sm p-3 p-md-4">
 
-        <div class="card-body p-0">
+        <h5 class="fw-bold text-dark mb-3">
+            <i class="bi bi-building me-2 text-primary"></i>
+            Obras Cadastradas
+        </h5>
 
-            <?php if (empty($obrasRecentes)): ?>
+        <?php if (empty($obrasRecentes)): ?>
 
-                <div class="text-center py-5 text-muted">
-                    <i class="bi bi-building fs-1 d-block mb-2"></i>
-                    Nenhuma obra cadastrada.
+            <div class="text-center py-5 my-2">
+
+                <div class="mb-3">
+                    <span
+                        class="d-inline-flex align-items-center justify-content-center bg-primary bg-opacity-10 text-primary rounded-circle"
+                        style="width: 70px; height: 70px;"
+                    >
+                        <i class="bi bi-journal-plus fs-2"></i>
+                    </span>
                 </div>
 
-            <?php else: ?>
+                <h5 class="fw-bold text-dark mb-1">
+                    Nenhuma obra cadastrada ainda
+                </h5>
 
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead>
+                <p
+                    class="text-muted small mb-3"
+                    style="max-width: 420px; margin: 0 auto;"
+                >
+                    Comece cadastrando a primeira obra para acompanhar o progresso físico-financeiro e disponibilizar o portal do cliente.
+                </p>
+
+                <a
+                    href="/nova-obra"
+                    class="btn btn-primary btn-sm fw-bold px-3 py-2"
+                >
+                    <i class="bi bi-plus-lg me-1"></i>
+                    Cadastrar Primeira Obra
+                </a>
+
+            </div>
+
+        <?php else: ?>
+
+            <div class="table-responsive">
+
+                <table class="table align-middle table-hover mb-0">
+
+                    <thead class="table-light">
+                        <tr>
+                            <th>#ID</th>
+                            <th>Cliente</th>
+                            <th>Endereço da Obra</th>
+                            <th style="min-width: 150px;">Progresso</th>
+                            <th class="text-end">Ações</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+
+                        <?php foreach ($obrasRecentes as $obra): ?>
+
+                            <?php
+                            $progresso = (float)$obra['progresso_total'];
+                            $progresso = max(0, min(100, $progresso));
+                            ?>
+
                             <tr>
-                                <th>Obra</th>
-                                <th>Cliente</th>
-                                <th>Status</th>
-                                <th>Progresso</th>
-                                <th></th>
-                            </tr>
-                        </thead>
 
-                        <tbody>
-                            <?php foreach ($obrasRecentes as $obra): ?>
+                                <td class="fw-bold">
+                                    #<?= (int)$obra['id'] ?>
+                                </td>
 
-                                <?php
-                                $progresso = max(
-                                    0,
-                                    min(
-                                        100,
-                                        (float) ($obra['progresso'] ?? 0)
-                                    )
-                                );
-                                ?>
+                                <td class="fw-bold text-dark">
+                                    <?= htmlspecialchars(
+                                        $obra['nome_cliente'],
+                                        ENT_QUOTES,
+                                        'UTF-8'
+                                    ) ?>
+                                </td>
 
-                                <tr>
-                                    <td>
-                                        <strong>
-                                            <?= htmlspecialchars(
-                                                $obra['nome_obra'] ?? 'Obra',
-                                                ENT_QUOTES,
-                                                'UTF-8'
-                                            ) ?>
-                                        </strong>
-                                    </td>
+                                <td>
+                                    <i class="bi bi-geo-alt me-1 text-danger"></i>
 
-                                    <td>
-                                        <?= htmlspecialchars(
-                                            $obra['cliente_nome'] ?? '-',
-                                            ENT_QUOTES,
-                                            'UTF-8'
-                                        ) ?>
-                                    </td>
+                                    <?= htmlspecialchars(
+                                        $obra['endereco_obra'],
+                                        ENT_QUOTES,
+                                        'UTF-8'
+                                    ) ?>
+                                </td>
 
-                                    <td>
-                                        <?= htmlspecialchars(
-                                            $obra['status'] ?? '-',
-                                            ENT_QUOTES,
-                                            'UTF-8'
-                                        ) ?>
-                                    </td>
+                                <td>
 
-                                    <td style="min-width: 150px;">
-                                        <div class="d-flex justify-content-between small mb-1">
-                                            <span><?= $progresso ?>%</span>
-                                        </div>
+                                    <div class="d-flex align-items-center gap-2">
 
-                                        <div class="progress" style="height: 6px;">
+                                        <div
+                                            class="progress flex-grow-1"
+                                            style="height: 10px;"
+                                        >
                                             <div
-                                                class="progress-bar"
+                                                class="progress-bar bg-success"
                                                 role="progressbar"
                                                 style="width: <?= $progresso ?>%;"
                                                 aria-valuenow="<?= $progresso ?>"
@@ -216,27 +206,44 @@ $obrasRecentes = $stmtObrasRecentes->fetchAll(PDO::FETCH_ASSOC);
                                                 aria-valuemax="100"
                                             ></div>
                                         </div>
-                                    </td>
 
-                                    <td class="text-end">
-                                        <a
-                                            href="/gerenciar-obra?id=<?= (int) $obra['id'] ?>"
-                                            class="btn btn-sm btn-outline-primary"
-                                        >
-                                            <i class="bi bi-eye"></i>
-                                            <span class="d-none d-md-inline">Ver</span>
-                                        </a>
-                                    </td>
-                                </tr>
+                                        <span class="small fw-bold">
+                                            <?= number_format(
+                                                $progresso,
+                                                0,
+                                                ',',
+                                                '.'
+                                            ) ?>%
+                                        </span>
 
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
+                                    </div>
 
-            <?php endif; ?>
+                                </td>
 
-        </div>
+                                <td class="text-end">
+
+                                    <a
+                                        href="/gerenciar-obra?id=<?= (int)$obra['id'] ?>"
+                                        class="btn btn-sm btn-outline-primary fw-bold text-nowrap"
+                                    >
+                                        <i class="bi bi-gear-fill me-1"></i>
+                                        Gerenciar
+                                    </a>
+
+                                </td>
+
+                            </tr>
+
+                        <?php endforeach; ?>
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        <?php endif; ?>
+
     </div>
 
 </div>
