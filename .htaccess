@@ -1,7 +1,12 @@
 RewriteEngine On
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^([a-zA-Z0-9_-]+)$ pages/$1.php [L,QSA]
 
-# Proteção para não listagem de diretórios
+# Não reescrever arquivos e diretórios que existem fisicamente
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Enviar todas as rotas para o roteador principal
+RewriteRule ^ index.php [L,QSA]
+
+# Desabilitar listagem de diretórios
 Options -Indexes

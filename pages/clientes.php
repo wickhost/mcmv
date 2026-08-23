@@ -6,7 +6,7 @@ verificarAdmin();
 
 // Buscar lista de clientes/usuários
 $stmt = $pdo->query("SELECT * FROM usuarios ORDER BY id DESC");
-$usuarios = $stmt->fetchAll();
+$usuarios = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 require_once __DIR__ . '/../includes/header.php';
 ?>
@@ -55,16 +55,22 @@ require_once __DIR__ . '/../includes/header.php';
                     <tbody>
                         <?php foreach ($usuarios as $u): ?>
                             <tr>
-                                <td class="fw-bold text-dark"><?= htmlspecialchars($u['nome']) ?></td>
-                                <td class="text-muted small"><?= htmlspecialchars($u['email'] ?? 'N/A') ?></td>
-                                <td class="text-muted small"><?= htmlspecialchars($u['telefone'] ?? 'N/A') ?></td>
+                                <td class="fw-bold text-dark">
+                                    <?= htmlspecialchars($u['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                                <td class="text-muted small">
+                                    <?= htmlspecialchars($u['email'] ?? 'N/A', ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                                <td class="text-muted small">
+                                    <?= htmlspecialchars($u['telefone'] ?? 'N/A', ENT_QUOTES, 'UTF-8') ?>
+                                </td>
                                 <td class="text-center">
-                                    <span class="badge <?= $u['tipo'] === 'admin' ? 'bg-danger' : 'bg-primary' ?>">
-                                        <?= strtoupper($u['tipo']) ?>
+                                    <span class="badge <?= ($u['tipo'] ?? '') === 'admin' ? 'bg-danger' : 'bg-primary' ?>">
+                                        <?= htmlspecialchars(strtoupper($u['tipo'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
                                     </span>
                                 </td>
                                 <td class="text-center">
-                                    <a href="/cliente-editar?id=<?= $u['id'] ?>" class="btn btn-sm btn-outline-primary" title="Editar">
+                                    <a href="/cliente-editar?id=<?= (int) $u['id'] ?>" class="btn btn-sm btn-outline-primary" title="Editar">
                                         <i class="bi bi-pencil"></i>
                                     </a>
                                 </td>

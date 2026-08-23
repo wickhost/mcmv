@@ -18,6 +18,7 @@ function verificarAutenticacao() {
  */
 function verificarAdmin() {
     verificarAutenticacao();
+
     if (($_SESSION['usuario_tipo'] ?? '') !== 'admin') {
         header('Location: /portal');
         exit;
@@ -29,6 +30,7 @@ function verificarAdmin() {
  */
 function verificarCliente() {
     verificarAutenticacao();
+
     if (($_SESSION['usuario_tipo'] ?? '') !== 'cliente') {
         header('Location: /dashboard');
         exit;

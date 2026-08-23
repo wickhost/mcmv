@@ -17,6 +17,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cliente = $stmt->fetch();
 
         if ($cliente && password_verify($senha, $cliente['senha'])) {
+            session_regenerate_id(true);
+
             $_SESSION['usuario_id']   = $cliente['id'];
             $_SESSION['usuario_nome'] = $cliente['nome'];
             $_SESSION['usuario_tipo'] = $cliente['tipo'];

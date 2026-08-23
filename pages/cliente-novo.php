@@ -1,5 +1,7 @@
 <?php
+require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
+
 verificarAdmin();
 
 $erro = '';
@@ -16,34 +18,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($nome) || empty($cpf) || empty($senha)) {
         $erro = 'Nome, CPF e Senha são campos obrigatórios.';
+    } elseif (!in_array($tipo, ['cliente', 'admin'], true)) {
+        $erro = 'Tipo de perfil inválido.';
     } else {
         $cpfLimpo = preg_replace('/[^0-9]/', '', $cpf);
 
-        // Verificar duplicidade de CPF
-        $stmtCheck = $pdo->prepare("SELECT id FROM usuarios WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') = ?");
-        $stmtCheck->execute([$cpfLimpo]);
-
-        if ($stmtCheck->fetch()) {
-            $erro = 'Este CPF já está cadastrado para outro usuário.';
+        if (strlen($cpfLimpo) !== 11) {
+            $erro = 'CPF inválido.';
         } else {
-            try {
-                $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
-                
-                $stmtIns = $pdo->prepare("INSERT INTO usuarios (nome, cpf, email, telefone, endereco, senha, tipo) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $stmtIns->execute([
-                    $nome,
-                    $cpf,
-                    $email ?: null,
-                    $telefone ?: null,
-                    $endereco ?: null,
-                    $senhaHash,
-                    $tipo
-                ]);
+            // Verificar duplicidade de CPF
+            $stmtCheck = $pdo->prepare("
+                SELECT id
+                FROM usuarios
+                WHERE REPLACE(
+                    REPLACE(
+                        REPLACE(cpf, '.', ''),
+                        '-',
+                        ''
+                    ),
+                    ' ',
+                    ''
+                ) = ?
+                LIMIT 1
+            ");
 
-                header('Location: /clientes?sucesso=1');
-                exit;
-            } catch (PDOException $e) {
-                $erro = 'Erro ao cadastrar cliente: ' . $e->getMessage();
+            $stmtCheck->execute([$cpfLimpo]);
+
+            if ($stmtCheck->fetch(PDO::FETCH_ASSOC)) {
+                $erro = 'Este CPF já está cadastrado para outro usuário.';
+            } else {
+                try {
+                    $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
+
+                    if ($senhaHash === false) {
+                        throw new RuntimeException('Não foi possível proteger a senha.');
+                    }
+
+                    $stmtIns = $pdo->prepare("
+                        INSERT INTO usuarios
+                            (nome, cpf, email, telefone, endereco, senha, tipo)
+                        VALUES
+                            (?, ?, ?, ?, ?, ?, ?)
+                    ");
+
+                    $stmtIns->execute([
+                        $nome,
+                        $cpf,
+                        $email !== '' ? $email : null,
+                        $telefone !== '' ? $telefone : null,
+                        $endereco !== '' ? $endereco : null,
+                        $senhaHash,
+                        $tipo
+                    ]);
+
+                    header('Location: /clientes?sucesso=1');
+                    exit;
+                } catch (PDOException $e) {
+                    $erro = 'Erro ao cadastrar cliente.';
+                } catch (RuntimeException $e) {
+                    $erro = 'Erro ao cadastrar cliente.';
+                }
             }
         }
     }
@@ -69,7 +103,7 @@ require_once __DIR__ . '/../includes/header.php';
 
             <?php if ($erro): ?>
                 <div class="alert alert-danger alert-dismissible fade show border-0 shadow-sm mb-3">
-                    <?= htmlspecialchars($erro) ?>
+                    <?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             <?php endif; ?>
@@ -79,33 +113,67 @@ require_once __DIR__ . '/../includes/header.php';
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Nome Completo *</label>
-                            <input type="text" name="nome" class="form-control" placeholder="Ex: João da Silva" value="<?= htmlspecialchars($_POST['nome'] ?? '') ?>" required>
+                            <input
+                                type="text"
+                                name="nome"
+                                class="form-control"
+                                placeholder="Ex: João da Silva"
+                                value="<?= htmlspecialchars($_POST['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                required
+                            >
                         </div>
 
                         <div class="col-md-6">
                             <label class="form-label fw-bold">CPF (Login do Cliente) *</label>
-                            <input type="text" name="cpf" class="form-control mask-cpf" inputmode="numeric" placeholder="000.000.000-00" value="<?= htmlspecialchars($_POST['cpf'] ?? '') ?>" required>
+                            <input
+                                type="text"
+                                name="cpf"
+                                class="form-control mask-cpf"
+                                inputmode="numeric"
+                                placeholder="000.000.000-00"
+                                value="<?= htmlspecialchars($_POST['cpf'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                required
+                            >
                         </div>
 
                         <div class="col-md-6">
                             <label class="form-label fw-bold">E-mail</label>
-                            <input type="email" name="email" class="form-control" placeholder="exemplo@email.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>">
+                            <input
+                                type="email"
+                                name="email"
+                                class="form-control"
+                                placeholder="exemplo@email.com"
+                                value="<?= htmlspecialchars($_POST['email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                            >
                         </div>
 
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Telefone / WhatsApp</label>
-                            <input type="text" name="telefone" class="form-control mask-phone" inputmode="numeric" placeholder="(00) 00000-0000" value="<?= htmlspecialchars($_POST['telefone'] ?? '') ?>">
+                            <input
+                                type="text"
+                                name="telefone"
+                                class="form-control mask-phone"
+                                inputmode="numeric"
+                                placeholder="(00) 00000-0000"
+                                value="<?= htmlspecialchars($_POST['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                            >
                         </div>
 
                         <div class="col-md-8">
                             <label class="form-label fw-bold">Endereço Residencial</label>
-                            <input type="text" name="endereco" class="form-control" placeholder="Rua, Número, Bairro" value="<?= htmlspecialchars($_POST['endereco'] ?? '') ?>">
+                            <input
+                                type="text"
+                                name="endereco"
+                                class="form-control"
+                                placeholder="Rua, Número, Bairro"
+                                value="<?= htmlspecialchars($_POST['endereco'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                            >
                         </div>
 
                         <div class="col-md-4">
                             <label class="form-label fw-bold">Tipo de Perfil *</label>
                             <select name="tipo" class="form-select">
-                                <option value="cliente" <?= (($_POST['tipo'] ?? '') === 'cliente') ? 'selected' : '' ?>>Cliente</option>
+                                <option value="cliente" <?= (($_POST['tipo'] ?? 'cliente') === 'cliente') ? 'selected' : '' ?>>Cliente</option>
                                 <option value="admin" <?= (($_POST['tipo'] ?? '') === 'admin') ? 'selected' : '' ?>>Administrador</option>
                             </select>
                         </div>
@@ -116,7 +184,13 @@ require_once __DIR__ . '/../includes/header.php';
 
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Senha *</label>
-                            <input type="password" name="senha" class="form-control" placeholder="Digite uma senha segura" required>
+                            <input
+                                type="password"
+                                name="senha"
+                                class="form-control"
+                                placeholder="Digite uma senha segura"
+                                required
+                            >
                         </div>
 
                         <div class="col-12 mt-4 text-end">

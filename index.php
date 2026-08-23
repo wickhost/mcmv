@@ -1,19 +1,32 @@
 <?php
-session_start();
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'httponly' => true,
+        'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+        'samesite' => 'Lax',
+    ]);
+
+    session_start();
+}
 
 require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/auth.php';
 
-$request = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$route = trim($request, '/');
+$request = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$route = trim(is_string($request) ? $request : '/', '/');
 
 // Se o usuário já estiver logado e tentar acessar a raiz '/', '/login' ou '/hlogin'
-if (isset($_SESSION['usuario_id']) && in_array($route, ['', 'login', 'hlogin'])) {
+if (
+    isset($_SESSION['usuario_id']) &&
+    in_array($route, ['', 'login', 'hlogin'], true)
+) {
     if ($_SESSION['usuario_tipo'] === 'admin') {
         header('Location: /dashboard');
     } else {
         header('Location: /portal');
     }
+
     exit;
 }
 
@@ -38,7 +51,7 @@ switch ($route) {
     case 'cliente-editar':
         require __DIR__ . '/pages/cliente-editar.php';
         break;
-		
+
     case 'cliente-novo':
         require __DIR__ . '/pages/cliente-novo.php';
         break;

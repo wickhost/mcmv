@@ -4,16 +4,24 @@ require_once __DIR__ . '/../includes/auth.php';
 
 verificarAdmin();
 
+$erro = '';
+
 // Processar exclusão de modelo
 if (isset($_GET['excluir'])) {
-    $idExcluir = (int)$_GET['excluir'];
-    try {
-        $stmtDel = $pdo->prepare("DELETE FROM modelos_casas WHERE id = ?");
-        $stmtDel->execute([$idExcluir]);
-        header('Location: /modelos?msg=deletado');
-        exit;
-    } catch (PDOException $e) {
-        $erro = 'Erro ao excluir modelo: ' . $e->getMessage();
+    $idExcluir = filter_input(INPUT_GET, 'excluir', FILTER_VALIDATE_INT);
+
+    if (!$idExcluir) {
+        $erro = 'Modelo inválido.';
+    } else {
+        try {
+            $stmtDel = $pdo->prepare("DELETE FROM modelos_casas WHERE id = ?");
+            $stmtDel->execute([$idExcluir]);
+
+            header('Location: /modelos?msg=deletado');
+            exit;
+        } catch (PDOException $e) {
+            $erro = 'Não foi possível excluir o modelo. Verifique se existem obras vinculadas a ele.';
+        }
     }
 }
 
@@ -22,13 +30,14 @@ $stmtModelos = $pdo->query("
     SELECT 
         m.*,
         COUNT(e.id) AS total_etapas,
-        SUM(e.valor_estimado) AS valor_total_estimado
+        COALESCE(SUM(e.valor_estimado), 0) AS valor_total_estimado
     FROM modelos_casas m
     LEFT JOIN modelos_etapas e ON m.id = e.modelo_id
     GROUP BY m.id
     ORDER BY m.id DESC
 ");
-$modelos = $stmtModelos->fetchAll();
+
+$modelos = $stmtModelos->fetchAll(PDO::FETCH_ASSOC);
 
 require_once __DIR__ . '/../includes/header.php';
 ?>
@@ -62,9 +71,9 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
     <?php endif; ?>
 
-    <?php if (isset($erro)): ?>
+    <?php if ($erro !== ''): ?>
         <div class="alert alert-danger alert-dismissible fade show border-0 shadow-sm" role="alert">
-            <i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($erro) ?>
+            <i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
     <?php endif; ?>
@@ -97,20 +106,40 @@ require_once __DIR__ . '/../includes/header.php';
                     <tbody>
                         <?php foreach ($modelos as $m): ?>
                             <tr>
-                                <td class="fw-bold text-dark"><?= htmlspecialchars($m['nome']) ?></td>
-                                <td class="text-muted small"><?= htmlspecialchars($m['descricao'] ?? 'Sem descrição') ?></td>
+                                <td class="fw-bold text-dark">
+                                    <?= htmlspecialchars($m['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+
+                                <td class="text-muted small">
+                                    <?= htmlspecialchars($m['descricao'] ?? 'Sem descrição', ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+
                                 <td class="text-center">
-                                    <span class="badge bg-secondary"><?= $m['total_etapas'] ?> Etapas</span>
+                                    <span class="badge bg-secondary">
+                                        <?= (int) $m['total_etapas'] ?> Etapas
+                                    </span>
                                 </td>
+
                                 <td class="text-end fw-bold text-success">
-                                    R$ <?= number_format($m['valor_total_estimado'] ?? 0, 2, ',', '.') ?>
+                                    R$ <?= number_format((float) ($m['valor_total_estimado'] ?? 0), 2, ',', '.') ?>
                                 </td>
+
                                 <td class="text-center">
                                     <div class="d-inline-flex gap-1">
-                                        <a href="/modelo-editar?id=<?= $m['id'] ?>" class="btn btn-sm btn-outline-primary" title="Editar Modelo">
+                                        <a
+                                            href="/modelo-editar?id=<?= (int) $m['id'] ?>"
+                                            class="btn btn-sm btn-outline-primary"
+                                            title="Editar Modelo"
+                                        >
                                             <i class="bi bi-pencil"></i>
                                         </a>
-                                        <a href="/modelos?excluir=<?= $m['id'] ?>" class="btn btn-sm btn-outline-danger" title="Excluir Modelo" onclick="return confirm('Tem certeza que deseja excluir este modelo?')">
+
+                                        <a
+                                            href="/modelos?excluir=<?= (int) $m['id'] ?>"
+                                            class="btn btn-sm btn-outline-danger"
+                                            title="Excluir Modelo"
+                                            onclick="return confirm('Tem certeza que deseja excluir este modelo?')"
+                                        >
                                             <i class="bi bi-trash"></i>
                                         </a>
                                     </div>
