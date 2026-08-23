@@ -1,1063 +1,994 @@
 <?php
+
 require_once __DIR__ . '/../includes/auth.php';
+
 verificarAdmin();
 
-$obraId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT) ?: 0;
-
-if (!$obraId) {
-    header('Location: /dashboard');
-    exit;
-}
-
 $erro = '';
-$sucesso = '';
 
-$stmtObra = $pdo->prepare("
-    SELECT
-        o.*,
-        u.nome AS nome_cliente,
-        u.cpf AS cpf_cliente,
-        u.telefone AS fone_cliente
-    FROM obras o
-    INNER JOIN usuarios u ON o.cliente_id = u.id
-    WHERE o.id = ?
-    LIMIT 1
-");
-
-$stmtObra->execute([$obraId]);
-$obra = $stmtObra->fetch();
-
-if (!$obra) {
-    header('Location: /dashboard');
-    exit;
-}
-
-function validarUploadImagem(array $arquivo): string
+/**
+ * Converte valor monetário brasileiro para float.
+ *
+ * Exemplos:
+ * 1.234,56 -> 1234.56
+ * 1234,56  -> 1234.56
+ * 1234.56  -> 1234.56
+ */
+function limpaMoeda($valor): float
 {
-    if (($arquivo['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-        throw new RuntimeException('Erro ao enviar a imagem.');
+    if ($valor === null || $valor === '') {
+        return 0.0;
     }
 
-    if (($arquivo['size'] ?? 0) > 10 * 1024 * 1024) {
-        throw new RuntimeException('A imagem não pode ultrapassar 10 MB.');
+    $valor = trim((string)$valor);
+
+    // Remove espaços e símbolos de moeda.
+    $valor = preg_replace('/[^\d,.\-]/', '', $valor);
+
+    if ($valor === '') {
+        return 0.0;
+    }
+
+    /*
+     * Quando existe vírgula, considera-se o padrão brasileiro:
+     * 1.234,56
+     */
+    if (strpos($valor, ',') !== false) {
+        $valor = str_replace('.', '', $valor);
+        $valor = str_replace(',', '.', $valor);
+    }
+
+    return (float)$valor;
+}
+
+/**
+ * Valida o arquivo de projeto.
+ */
+function validarArquivoProjeto(array $arquivo): string
+{
+    if (!isset($arquivo['error'])) {
+        throw new RuntimeException('Arquivo de projeto inválido.');
+    }
+
+    if ($arquivo['error'] === UPLOAD_ERR_NO_FILE) {
+        throw new RuntimeException('Nenhum arquivo foi enviado.');
+    }
+
+    if ($arquivo['error'] !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Erro ao enviar o arquivo de projeto.');
+    }
+
+    if (($arquivo['size'] ?? 0) <= 0) {
+        throw new RuntimeException('O arquivo de projeto está vazio.');
+    }
+
+    // Limite de 20 MB.
+    if (($arquivo['size'] ?? 0) > 20 * 1024 * 1024) {
+        throw new RuntimeException(
+            'O arquivo de projeto não pode ultrapassar 20 MB.'
+        );
     }
 
     $permitidos = [
-        'jpg'  => 'image/jpeg',
-        'jpeg' => 'image/jpeg',
-        'png'  => 'image/png',
-        'webp' => 'image/webp',
+        'pdf'  => [
+            'application/pdf',
+        ],
+        'png'  => [
+            'image/png',
+        ],
+        'jpg'  => [
+            'image/jpeg',
+        ],
+        'jpeg' => [
+            'image/jpeg',
+        ],
     ];
 
-    $ext = strtolower(pathinfo($arquivo['name'], PATHINFO_EXTENSION));
+    $extensao = strtolower(
+        pathinfo($arquivo['name'] ?? '', PATHINFO_EXTENSION)
+    );
 
-    if (!isset($permitidos[$ext])) {
-        throw new RuntimeException('Formato de imagem inválido. Use JPG, PNG ou WEBP.');
+    if (!isset($permitidos[$extensao])) {
+        throw new RuntimeException(
+            'Formato de arquivo inválido. Use PDF, PNG ou JPG.'
+        );
+    }
+
+    if (
+        !isset($arquivo['tmp_name']) ||
+        !is_uploaded_file($arquivo['tmp_name'])
+    ) {
+        throw new RuntimeException(
+            'O arquivo enviado não é um upload válido.'
+        );
     }
 
     $finfo = new finfo(FILEINFO_MIME_TYPE);
     $mime = $finfo->file($arquivo['tmp_name']);
 
-    if ($mime !== $permitidos[$ext]) {
-        throw new RuntimeException('O conteúdo da imagem não corresponde ao formato informado.');
-    }
-
-    return $ext;
-}
-
-function validarUploadDocumento(array $arquivo): string
-{
-    if (($arquivo['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-        throw new RuntimeException('Erro ao enviar o documento.');
-    }
-
-    if (($arquivo['size'] ?? 0) > 20 * 1024 * 1024) {
-        throw new RuntimeException('O documento não pode ultrapassar 20 MB.');
-    }
-
-    $permitidos = [
-        'pdf',
-        'jpg',
-        'jpeg',
-        'png',
-        'webp',
-        'doc',
-        'docx',
-        'xls',
-        'xlsx',
-        'zip',
-    ];
-
-    $ext = strtolower(pathinfo($arquivo['name'], PATHINFO_EXTENSION));
-
-    if (!in_array($ext, $permitidos, true)) {
+    if (
+        $mime === false ||
+        !in_array($mime, $permitidos[$extensao], true)
+    ) {
         throw new RuntimeException(
-            'Formato de documento inválido.'
+            'O conteúdo do arquivo não corresponde ao formato informado.'
         );
     }
 
-    return $ext;
+    return $extensao;
 }
+
+/*
+ * Buscar clientes e modelos.
+ */
+$clientes = $pdo
+    ->query("
+        SELECT id, nome, cpf
+        FROM usuarios
+        WHERE tipo = 'cliente'
+        ORDER BY nome ASC
+    ")
+    ->fetchAll();
+
+$modelos = $pdo
+    ->query("
+        SELECT id, nome
+        FROM modelos_casas
+        ORDER BY nome ASC
+    ")
+    ->fetchAll();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $acao = $_POST['acao'] ?? '';
+    $clienteId = filter_input(
+        INPUT_POST,
+        'cliente_id',
+        FILTER_VALIDATE_INT
+    ) ?: 0;
 
-    if ($acao === 'atualizar_etapa') {
-        $etapaId = filter_input(INPUT_POST, 'etapa_id', FILTER_VALIDATE_INT) ?: 0;
-        $progresso = (float)str_replace(
-            ',',
-            '.',
-            $_POST['progresso'] ?? '0'
-        );
+    $modeloId = filter_input(
+        INPUT_POST,
+        'modelo_id',
+        FILTER_VALIDATE_INT
+    ) ?: 0;
 
-        $progresso = max(0, min(100, $progresso));
+    $enderecoObra = trim(
+        (string)($_POST['endereco_obra'] ?? '')
+    );
 
-        $concluido = isset($_POST['concluido']) ? 1 : 0;
+    $valorTotal = limpaMoeda(
+        $_POST['valor_total'] ?? '0'
+    );
 
-        if ($concluido) {
-            $progresso = 100;
+    $valorFinanciamento = limpaMoeda(
+        $_POST['valor_financiamento'] ?? '0'
+    );
+
+    $valorTerreno = limpaMoeda(
+        $_POST['valor_terreno'] ?? '0'
+    );
+
+    $valorSubsidio = limpaMoeda(
+        $_POST['valor_subsidio'] ?? '0'
+    );
+
+    $valorEntrada = limpaMoeda(
+        $_POST['valor_entrada'] ?? '0'
+    );
+
+    /*
+     * Validações básicas.
+     */
+    if ($clienteId <= 0) {
+        $erro = 'Selecione um cliente válido.';
+    } elseif ($enderecoObra === '') {
+        $erro = 'Informe o endereço da obra.';
+    } elseif ($valorTotal <= 0) {
+        $erro = 'Informe um valor total do imóvel válido.';
+    } elseif (
+        $valorFinanciamento < 0 ||
+        $valorTerreno < 0 ||
+        $valorSubsidio < 0 ||
+        $valorEntrada < 0
+    ) {
+        $erro = 'Os valores financeiros não podem ser negativos.';
+    }
+
+    /*
+     * Validar se o cliente realmente existe e é cliente.
+     */
+    if ($erro === '') {
+        $stmtCliente = $pdo->prepare("
+            SELECT id
+            FROM usuarios
+            WHERE id = ?
+              AND tipo = 'cliente'
+            LIMIT 1
+        ");
+
+        $stmtCliente->execute([$clienteId]);
+
+        if (!$stmtCliente->fetchColumn()) {
+            $erro = 'O cliente selecionado não foi encontrado.';
         }
+    }
 
-        if (!$etapaId) {
-            $erro = 'Etapa inválida.';
-        } else {
-            $stmtUpE = $pdo->prepare("
-                UPDATE obra_etapas
-                SET progresso = ?, concluido = ?
-                WHERE id = ? AND obra_id = ?
+    /*
+     * Validar modelo, quando informado.
+     */
+    if ($erro === '' && $modeloId > 0) {
+        $stmtModelo = $pdo->prepare("
+            SELECT id
+            FROM modelos_casas
+            WHERE id = ?
+            LIMIT 1
+        ");
+
+        $stmtModelo->execute([$modeloId]);
+
+        if (!$stmtModelo->fetchColumn()) {
+            $erro = 'O modelo de cronograma selecionado não foi encontrado.';
+        }
+    }
+
+    if ($erro === '') {
+        /*
+         * Sobra para construção:
+         *
+         * Financiamento
+         * + Subsídio
+         * + Entrada
+         * - Terreno
+         */
+        $sobraConstrucao =
+            $valorFinanciamento
+            + $valorSubsidio
+            + $valorEntrada
+            - $valorTerreno;
+
+        if ($sobraConstrucao <= 0) {
+            $erro = 'O valor disponível para a construção é zero ou negativo. Verifique os valores.';
+        }
+    }
+
+    $arquivoProjeto = null;
+    $destinoProjeto = null;
+
+    if (
+        $erro === '' &&
+        isset($_FILES['arquivo_projeto']) &&
+        ($_FILES['arquivo_projeto']['error'] ?? UPLOAD_ERR_NO_FILE)
+            !== UPLOAD_ERR_NO_FILE
+    ) {
+        try {
+            $extensao = validarArquivoProjeto(
+                $_FILES['arquivo_projeto']
+            );
+
+            $diretorioUploads = __DIR__ . '/../uploads/';
+
+            if (
+                !is_dir($diretorioUploads) &&
+                !mkdir($diretorioUploads, 0755, true) &&
+                !is_dir($diretorioUploads)
+            ) {
+                throw new RuntimeException(
+                    'Não foi possível criar o diretório de uploads.'
+                );
+            }
+
+            $nomeArquivo =
+                'projeto_' .
+                bin2hex(random_bytes(16)) .
+                '.' .
+                $extensao;
+
+            $destinoProjeto =
+                $diretorioUploads . $nomeArquivo;
+
+            /*
+             * CORREÇÃO:
+             * A função correta do PHP é move_uploaded_file().
+             */
+            if (
+                !move_uploaded_file(
+                    $_FILES['arquivo_projeto']['tmp_name'],
+                    $destinoProjeto
+                )
+            ) {
+                throw new RuntimeException(
+                    'Não foi possível salvar o arquivo de projeto.'
+                );
+            }
+
+            $arquivoProjeto = $nomeArquivo;
+        } catch (Throwable $e) {
+            $erro = $e->getMessage();
+
+            /*
+             * Se o upload foi salvo mas posteriormente houve erro,
+             * remove o arquivo para não deixar lixo no servidor.
+             */
+            if (
+                $destinoProjeto !== null &&
+                is_file($destinoProjeto)
+            ) {
+                @unlink($destinoProjeto);
+            }
+
+            $arquivoProjeto = null;
+            $destinoProjeto = null;
+        }
+    }
+
+    if ($erro === '') {
+        try {
+            $pdo->beginTransaction();
+
+            /*
+             * Criar a obra.
+             */
+            $stmtObra = $pdo->prepare("
+                INSERT INTO obras (
+                    cliente_id,
+                    modelo_id,
+                    endereco_obra,
+                    valor_total,
+                    valor_terreno,
+                    valor_subsidio,
+                    valor_entrada,
+                    sobra_construcao,
+                    arquivo_projeto
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
 
-            $stmtUpE->execute([
-                $progresso,
-                $concluido,
-                $etapaId,
-                $obraId
+            $stmtObra->execute([
+                $clienteId,
+                $modeloId > 0 ? $modeloId : null,
+                $enderecoObra,
+                $valorTotal,
+                $valorTerreno,
+                $valorSubsidio,
+                $valorEntrada,
+                $sobraConstrucao,
+                $arquivoProjeto
             ]);
 
-            if ($stmtUpE->rowCount() === 0) {
-                $stmtCheck = $pdo->prepare("
-                    SELECT id
-                    FROM obra_etapas
-                    WHERE id = ? AND obra_id = ?
-                    LIMIT 1
-                ");
-                $stmtCheck->execute([$etapaId, $obraId]);
+            $obraId = (int)$pdo->lastInsertId();
 
-                if (!$stmtCheck->fetchColumn()) {
-                    $erro = 'Etapa não encontrada.';
+            if ($obraId <= 0) {
+                throw new RuntimeException(
+                    'Não foi possível obter o ID da obra criada.'
+                );
+            }
+
+            /*
+             * Copiar as etapas do modelo para a obra.
+             */
+            if ($modeloId > 0) {
+                $stmtEtapasModelo = $pdo->prepare("
+                    SELECT
+                        ordem,
+                        nome_etapa,
+                        peso_percentual
+                    FROM modelos_etapas
+                    WHERE modelo_id = ?
+                    ORDER BY ordem ASC
+                ");
+
+                $stmtEtapasModelo->execute([
+                    $modeloId
+                ]);
+
+                $etapasModelo = $stmtEtapasModelo->fetchAll();
+
+                $stmtInsertObraEtapa = $pdo->prepare("
+                    INSERT INTO obra_etapas (
+                        obra_id,
+                        ordem,
+                        nome_etapa,
+                        peso_percentual,
+                        valor_etapa,
+                        progresso,
+                        concluido
+                    )
+                    VALUES (?, ?, ?, ?, ?, 0.00, 0)
+                ");
+
+                foreach ($etapasModelo as $etapa) {
+                    $peso = (float)$etapa['peso_percentual'];
+
+                    $valorEtapa =
+                        ($sobraConstrucao * $peso) / 100;
+
+                    $stmtInsertObraEtapa->execute([
+                        $obraId,
+                        (int)$etapa['ordem'],
+                        $etapa['nome_etapa'],
+                        $peso,
+                        $valorEtapa
+                    ]);
                 }
             }
 
-            if ($erro === '') {
-                $stmtSum = $pdo->prepare("
-                    SELECT
-                        COALESCE(
-                            SUM((progresso * peso_percentual) / 100),
-                            0
-                        )
-                    FROM obra_etapas
-                    WHERE obra_id = ?
-                ");
+            $pdo->commit();
 
-                $stmtSum->execute([$obraId]);
-
-                $novoProgressoTotal = min(
-                    100,
-                    max(0, (float)$stmtSum->fetchColumn())
-                );
-
-                $stmtUpO = $pdo->prepare("
-                    UPDATE obras
-                    SET progresso_total = ?
-                    WHERE id = ?
-                ");
-
-                $stmtUpO->execute([
-                    $novoProgressoTotal,
-                    $obraId
-                ]);
-
-                $sucesso = 'Etapa atualizada com sucesso!';
-            }
-        }
-    }
-
-    if ($acao === 'upload_foto') {
-        $descricao = trim($_POST['descricao_foto'] ?? '');
-
-        try {
-            if (
-                !isset($_FILES['foto']) ||
-                ($_FILES['foto']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE
-            ) {
-                throw new RuntimeException('Selecione uma imagem.');
-            }
-
-            $ext = validarUploadImagem($_FILES['foto']);
-
-            $diretorio = __DIR__ . '/../uploads/fotos/';
-
-            if (!is_dir($diretorio) && !mkdir($diretorio, 0755, true) && !is_dir($diretorio)) {
-                throw new RuntimeException('Não foi possível criar o diretório de fotos.');
-            }
-
-            $nomeFoto = 'foto_' .
-                $obraId . '_' .
-                bin2hex(random_bytes(12)) .
-                '.' .
-                $ext;
-
-            $destino = $diretorio . $nomeFoto;
-
-            if (!move_uploaded_file($_FILES['foto']['tmp_name'], $destino)) {
-                throw new RuntimeException('Erro ao salvar a foto.');
-            }
-
-            try {
-                $stmtFoto = $pdo->prepare("
-                    INSERT INTO obra_fotos (
-                        obra_id,
-                        caminho_foto,
-                        descricao
-                    )
-                    VALUES (?, ?, ?)
-                ");
-
-                $stmtFoto->execute([
-                    $obraId,
-                    $nomeFoto,
-                    $descricao !== '' ? $descricao : null
-                ]);
-            } catch (Throwable $e) {
-                @unlink($destino);
-                throw $e;
-            }
-
-            $sucesso = 'Foto adicionada à galeria!';
-        } catch (Throwable $e) {
-            $erro = $e->getMessage();
-        }
-    }
-
-    if ($acao === 'upload_documento') {
-        $nomeDocumento = trim($_POST['nome_documento'] ?? '');
-
-        try {
-            if ($nomeDocumento === '') {
-                throw new RuntimeException(
-                    'Informe o nome do documento.'
-                );
-            }
-
-            if (
-                !isset($_FILES['documento']) ||
-                ($_FILES['documento']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE
-            ) {
-                throw new RuntimeException(
-                    'Selecione um arquivo.'
-                );
-            }
-
-            $ext = validarUploadDocumento($_FILES['documento']);
-
-            $diretorio = __DIR__ . '/../uploads/documentos/';
-
-            if (!is_dir($diretorio) && !mkdir($diretorio, 0755, true) && !is_dir($diretorio)) {
-                throw new RuntimeException(
-                    'Não foi possível criar o diretório de documentos.'
-                );
-            }
-
-            $nomeArquivo = 'doc_' .
-                $obraId . '_' .
-                bin2hex(random_bytes(12)) .
-                '.' .
-                $ext;
-
-            $destino = $diretorio . $nomeArquivo;
-
-            if (!move_uploaded_file($_FILES['documento']['tmp_name'], $destino)) {
-                throw new RuntimeException(
-                    'Erro ao salvar o documento.'
-                );
-            }
-
-            try {
-                $stmtDoc = $pdo->prepare("
-                    INSERT INTO obra_documentos (
-                        obra_id,
-                        nome_documento,
-                        caminho_arquivo
-                    )
-                    VALUES (?, ?, ?)
-                ");
-
-                $stmtDoc->execute([
-                    $obraId,
-                    $nomeDocumento,
-                    $nomeArquivo
-                ]);
-            } catch (Throwable $e) {
-                @unlink($destino);
-                throw $e;
-            }
-
-            $sucesso = 'Documento anexado com sucesso!';
-        } catch (Throwable $e) {
-            $erro = $e->getMessage();
-        }
-    }
-
-    $stmtObra->execute([$obraId]);
-    $obra = $stmtObra->fetch();
-}
-
-if (isset($_GET['del_foto'])) {
-    $fotoId = filter_input(INPUT_GET, 'del_foto', FILTER_VALIDATE_INT) ?: 0;
-
-    if ($fotoId) {
-        $stmtF = $pdo->prepare("
-            SELECT caminho_foto
-            FROM obra_fotos
-            WHERE id = ? AND obra_id = ?
-            LIMIT 1
-        ");
-
-        $stmtF->execute([
-            $fotoId,
-            $obraId
-        ]);
-
-        $fotoDel = $stmtF->fetch();
-
-        if ($fotoDel) {
-            $arquivo = __DIR__ .
-                '/../uploads/fotos/' .
-                basename($fotoDel['caminho_foto']);
-
-            if (is_file($arquivo)) {
-                @unlink($arquivo);
-            }
-
-            $pdo->prepare("
-                DELETE FROM obra_fotos
-                WHERE id = ? AND obra_id = ?
-            ")->execute([
-                $fotoId,
+            header(
+                'Location: /gerenciar-obra?id=' .
                 $obraId
-            ]);
-        }
-    }
-
-    header("Location: /gerenciar-obra?id={$obraId}&sucesso=foto_del");
-    exit;
-}
-
-if (isset($_GET['del_doc'])) {
-    $docId = filter_input(INPUT_GET, 'del_doc', FILTER_VALIDATE_INT) ?: 0;
-
-    if ($docId) {
-        $stmtD = $pdo->prepare("
-            SELECT caminho_arquivo
-            FROM obra_documentos
-            WHERE id = ? AND obra_id = ?
-            LIMIT 1
-        ");
-
-        $stmtD->execute([
-            $docId,
-            $obraId
-        ]);
-
-        $docDel = $stmtD->fetch();
-
-        if ($docDel) {
-            $arquivo = __DIR__ .
-                '/../uploads/documentos/' .
-                basename($docDel['caminho_arquivo']);
-
-            if (is_file($arquivo)) {
-                @unlink($arquivo);
+            );
+            exit;
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
             }
 
-            $pdo->prepare("
-                DELETE FROM obra_documentos
-                WHERE id = ? AND obra_id = ?
-            ")->execute([
-                $docId,
-                $obraId
-            ]);
+            /*
+             * Se o banco falhou depois do upload,
+             * remove o arquivo enviado.
+             */
+            if (
+                $destinoProjeto !== null &&
+                is_file($destinoProjeto)
+            ) {
+                @unlink($destinoProjeto);
+            }
+
+            $arquivoProjeto = null;
+            $destinoProjeto = null;
+
+            /*
+             * Não expõe detalhes internos do banco ao usuário.
+             */
+            $erro = 'Erro ao cadastrar a obra. Verifique os dados e tente novamente.';
         }
     }
-
-    header("Location: /gerenciar-obra?id={$obraId}&sucesso=doc_del");
-    exit;
 }
-
-if (isset($_GET['sucesso'])) {
-    if ($_GET['sucesso'] === 'foto_del') {
-        $sucesso = 'Foto excluída com sucesso!';
-    }
-
-    if ($_GET['sucesso'] === 'doc_del') {
-        $sucesso = 'Documento excluído com sucesso!';
-    }
-}
-
-$stmtEtapas = $pdo->prepare("
-    SELECT *
-    FROM obra_etapas
-    WHERE obra_id = ?
-    ORDER BY ordem ASC
-");
-
-$stmtEtapas->execute([$obraId]);
-$etapas = $stmtEtapas->fetchAll();
-
-$stmtFotos = $pdo->prepare("
-    SELECT *
-    FROM obra_fotos
-    WHERE obra_id = ?
-    ORDER BY id DESC
-");
-
-$stmtFotos->execute([$obraId]);
-$fotos = $stmtFotos->fetchAll();
-
-$stmtDocs = $pdo->prepare("
-    SELECT *
-    FROM obra_documentos
-    WHERE obra_id = ?
-    ORDER BY id DESC
-");
-
-$stmtDocs->execute([$obraId]);
-$documentos = $stmtDocs->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
 <div class="container my-3 my-md-4">
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
-        <div>
-            <h3 class="fw-bold m-0">
-                <i class="bi bi-gear-fill me-2 text-primary"></i>
-                Gestão da Obra #<?= (int)$obra['id'] ?>
+
+    <div class="page-header">
+        <div class="page-header-content">
+            <h3 class="page-title">
+                <i class="bi bi-building-add text-primary me-2"></i>
+                Nova Obra
             </h3>
 
-            <p class="text-muted m-0 small">
-                <i class="bi bi-geo-alt text-danger me-1"></i>
-                <?= htmlspecialchars($obra['endereco_obra'], ENT_QUOTES, 'UTF-8') ?>
+            <p class="page-subtitle">
+                Cadastre uma nova obra e vincule ao proprietário
             </p>
         </div>
 
-        <div class="d-flex gap-2 flex-wrap">
-            <a
-                href="/relatorio-obra?id=<?= (int)$obra['id'] ?>"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="btn btn-outline-danger btn-sm fw-bold"
-            >
-                <i class="bi bi-file-earmark-pdf me-1"></i>
-                Relatório PDF
-            </a>
-
-            <a
-                href="/obra-editar?id=<?= (int)$obra['id'] ?>"
-                class="btn btn-outline-primary btn-sm fw-bold"
-            >
-                <i class="bi bi-pencil me-1"></i>
-                Editar Dados
-            </a>
-
-            <a
-                href="/dashboard"
-                class="btn btn-outline-secondary btn-sm fw-bold"
-            >
-                <i class="bi bi-arrow-left me-1"></i>
-                Voltar
-            </a>
-        </div>
+        <a
+            href="/dashboard"
+            class="btn btn-outline-secondary btn-action-top"
+        >
+            <i class="bi bi-arrow-left me-1"></i>
+            Voltar ao Dashboard
+        </a>
     </div>
 
-    <?php if ($sucesso): ?>
-        <div class="alert alert-success alert-dismissible fade show">
-            <?= htmlspecialchars($sucesso, ENT_QUOTES, 'UTF-8') ?>
-
-            <button
-                type="button"
-                class="btn-close"
-                data-bs-dismiss="alert"
-            ></button>
-        </div>
-    <?php endif; ?>
-
     <?php if ($erro): ?>
-        <div class="alert alert-danger alert-dismissible fade show">
+        <div
+            class="alert alert-danger alert-dismissible fade show border-0 shadow-sm"
+            role="alert"
+        >
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
             <?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
 
             <button
                 type="button"
                 class="btn-close"
                 data-bs-dismiss="alert"
+                aria-label="Fechar"
             ></button>
         </div>
     <?php endif; ?>
 
-    <div class="row g-3 mb-4">
-        <div class="col-12 col-md-4">
-            <div class="card border-0 shadow-sm p-3 h-100 text-center justify-content-center">
-                <small class="text-muted fw-bold d-block mb-1">
-                    EVOLUÇÃO GLOBAL DA OBRA
-                </small>
-
-                <h2 class="fw-bold text-success m-0">
-                    <?= number_format((float)$obra['progresso_total'], 1, ',', '.') ?>%
-                </h2>
-
-                <div class="progress mt-2" style="height: 12px;">
-                    <div
-                        class="progress-bar bg-success"
-                        style="width: <?= min(100, max(0, (float)$obra['progresso_total'])) ?>%;"
-                    ></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-12 col-md-8">
-            <div class="card border-0 shadow-sm p-3 h-100">
-                <div class="row g-2 text-center text-sm-start">
-                    <div class="col-6 col-sm-3">
-                        <small class="text-muted d-block fw-bold">
-                            PROPRIETÁRIO
-                        </small>
-
-                        <span class="fw-bold text-dark d-block text-truncate">
-                            <?= htmlspecialchars($obra['nome_cliente'], ENT_QUOTES, 'UTF-8') ?>
-                        </span>
-                    </div>
-
-                    <div class="col-6 col-sm-3">
-                        <small class="text-muted d-block fw-bold">
-                            VALOR TOTAL
-                        </small>
-
-                        <span class="fw-bold text-dark d-block">
-                            R$ <?= number_format((float)$obra['valor_total'], 2, ',', '.') ?>
-                        </span>
-                    </div>
-
-                    <div class="col-6 col-sm-3">
-                        <small class="text-muted d-block fw-bold">
-                            CONSTRUÇÃO
-                        </small>
-
-                        <span class="fw-bold text-success d-block">
-                            R$ <?= number_format((float)$obra['sobra_construcao'], 2, ',', '.') ?>
-                        </span>
-                    </div>
-
-                    <div class="col-6 col-sm-3">
-                        <small class="text-muted d-block fw-bold">
-                            TERRENO
-                        </small>
-
-                        <span class="fw-bold text-dark d-block">
-                            R$ <?= number_format((float)$obra['valor_terreno'], 2, ',', '.') ?>
-                        </span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <ul
-        class="nav nav-tabs nav-fill mb-4 shadow-sm bg-white rounded p-1"
-        id="obraTabs"
-        role="tablist"
+    <form
+        method="POST"
+        action=""
+        enctype="multipart/form-data"
     >
-        <li class="nav-item" role="presentation">
-            <button
-                class="nav-link active fw-bold py-2"
-                id="etapas-tab"
-                data-bs-toggle="tab"
-                data-bs-target="#etapas-content"
-                type="button"
-            >
-                <i class="bi bi-list-check me-1"></i>
-                Cronograma / Etapas
-            </button>
-        </li>
 
-        <li class="nav-item" role="presentation">
-            <button
-                class="nav-link fw-bold py-2"
-                id="fotos-tab"
-                data-bs-toggle="tab"
-                data-bs-target="#fotos-content"
-                type="button"
-            >
-                <i class="bi bi-camera me-1"></i>
-                Galeria de Fotos (<?= count($fotos) ?>)
-            </button>
-        </li>
+        <div class="card border-0 shadow-sm p-3 p-md-4 mb-4">
 
-        <li class="nav-item" role="presentation">
-            <button
-                class="nav-link fw-bold py-2"
-                id="docs-tab"
-                data-bs-toggle="tab"
-                data-bs-target="#docs-content"
-                type="button"
-            >
-                <i class="bi bi-paperclip me-1"></i>
-                Comprovantes / Docs (<?= count($documentos) ?>)
-            </button>
-        </li>
-    </ul>
+            <h5 class="fw-bold text-dark mb-3">
+                <i class="bi bi-person-badge me-2 text-primary"></i>
+                Proprietário & Modelo
+            </h5>
 
-    <div class="tab-content" id="obraTabsContent">
-        <div class="tab-pane fade show active" id="etapas-content">
-            <div class="card border-0 shadow-sm p-3 p-md-4">
-                <h5 class="fw-bold text-dark mb-3">
-                    <i class="bi bi-list-ol me-2 text-primary"></i>
-                    Medição de Etapas Físicas
-                </h5>
+            <div class="row g-3">
 
-                <?php if (empty($etapas)): ?>
-                    <div class="alert alert-info text-center m-0">
-                        Nenhuma etapa cadastrada para esta obra.
-                    </div>
-                <?php else: ?>
-                    <div class="table-responsive">
-                        <table class="table align-middle table-hover">
-                            <thead class="table-light">
-                                <tr>
-                                    <th style="width: 40px;">#</th>
-                                    <th>Etapa / Serviço</th>
-                                    <th style="width: 100px;" class="text-center">Peso (%)</th>
-                                    <th style="width: 130px;" class="text-end">Valor (R$)</th>
-                                    <th style="width: 220px;">Progresso Executado</th>
-                                    <th style="width: 120px;" class="text-center">Ações</th>
-                                </tr>
-                            </thead>
+                <div class="col-md-6">
 
-                            <tbody>
-                                <?php foreach ($etapas as $etapa): ?>
-                                    <?php
-                                    $progresso = min(
-                                        100,
-                                        max(0, (float)$etapa['progresso'])
-                                    );
-                                    ?>
+                    <label class="form-label fw-bold">
+                        Cliente Proprietário *
+                    </label>
 
-                                    <tr class="<?= $etapa['concluido'] ? 'table-success bg-opacity-25' : '' ?>">
-                                        <td class="fw-bold text-muted">
-                                            <?= (int)$etapa['ordem'] ?>
-                                        </td>
+                    <select
+                        name="cliente_id"
+                        class="form-select"
+                        required
+                    >
+                        <option value="">
+                            Selecione um cliente...
+                        </option>
 
-                                        <td class="fw-bold text-dark">
-                                            <?= htmlspecialchars($etapa['nome_etapa'], ENT_QUOTES, 'UTF-8') ?>
+                        <?php foreach ($clientes as $cliente): ?>
 
-                                            <?php if ($etapa['concluido']): ?>
-                                                <span class="badge bg-success ms-1">
-                                                    <i class="bi bi-check-lg me-1"></i>
-                                                    Concluída
-                                                </span>
-                                            <?php endif; ?>
-                                        </td>
+                            <option
+                                value="<?= (int)$cliente['id'] ?>"
+                                <?= (
+                                    isset($_POST['cliente_id']) &&
+                                    (int)$_POST['cliente_id'] === (int)$cliente['id']
+                                ) ? 'selected' : '' ?>
+                            >
+                                <?= htmlspecialchars(
+                                    $cliente['nome'],
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>
 
-                                        <td class="text-center">
-                                            <span class="badge bg-light text-dark border">
-                                                <?= number_format((float)$etapa['peso_percentual'], 2, ',', '.') ?>%
-                                            </span>
-                                        </td>
+                                <?php if (!empty($cliente['cpf'])): ?>
+                                    (CPF:
+                                    <?= htmlspecialchars(
+                                        $cliente['cpf'],
+                                        ENT_QUOTES,
+                                        'UTF-8'
+                                    ) ?>)
+                                <?php endif; ?>
+                            </option>
 
-                                        <td class="text-end fw-bold">
-                                            R$ <?= number_format((float)$etapa['valor_etapa'], 2, ',', '.') ?>
-                                        </td>
-
-                                        <td>
-                                            <div class="d-flex align-items-center gap-2">
-                                                <div
-                                                    class="progress flex-grow-1"
-                                                    style="height: 8px;"
-                                                >
-                                                    <div
-                                                        class="progress-bar <?= $etapa['concluido'] ? 'bg-success' : 'bg-primary' ?>"
-                                                        style="width: <?= $progresso ?>%;"
-                                                    ></div>
-                                                </div>
-
-                                                <span class="small fw-bold me-1">
-                                                    <?= number_format($progresso, 0, ',', '.') ?>%
-                                                </span>
-                                            </div>
-                                        </td>
-
-                                        <td class="text-center">
-                                            <button
-                                                class="btn btn-sm btn-outline-primary fw-bold"
-                                                data-bs-toggle="modal"
-                                                data-bs-target="#modalEtapa<?= (int)$etapa['id'] ?>"
-                                                type="button"
-                                            >
-                                                <i class="bi bi-pencil-square me-1"></i>
-                                                Medir
-                                            </button>
-                                        </td>
-                                    </tr>
-
-                                    <div
-                                        class="modal fade"
-                                        id="modalEtapa<?= (int)$etapa['id'] ?>"
-                                        tabindex="-1"
-                                        aria-hidden="true"
-                                    >
-                                        <div class="modal-dialog modal-dialog-centered">
-                                            <div class="modal-content">
-                                                <div class="modal-header">
-                                                    <h5 class="modal-title fw-bold">
-                                                        Atualizar Medição:
-                                                        Etapa #<?= (int)$etapa['ordem'] ?>
-                                                    </h5>
-
-                                                    <button
-                                                        type="button"
-                                                        class="btn-close"
-                                                        data-bs-dismiss="modal"
-                                                    ></button>
-                                                </div>
-
-                                                <form method="POST" action="">
-                                                    <input
-                                                        type="hidden"
-                                                        name="acao"
-                                                        value="atualizar_etapa"
-                                                    >
-
-                                                    <input
-                                                        type="hidden"
-                                                        name="etapa_id"
-                                                        value="<?= (int)$etapa['id'] ?>"
-                                                    >
-
-                                                    <div class="modal-body">
-                                                        <p class="fw-bold text-primary mb-3">
-                                                            <?= htmlspecialchars($etapa['nome_etapa'], ENT_QUOTES, 'UTF-8') ?>
-                                                        </p>
-
-                                                        <div class="mb-3">
-                                                            <label class="form-label fw-bold">
-                                                                Porcentagem Executada (0 a 100%)
-                                                            </label>
-
-                                                            <div class="input-group">
-                                                                <input
-                                                                    type="number"
-                                                                    step="0.01"
-                                                                    min="0"
-                                                                    max="100"
-                                                                    name="progresso"
-                                                                    class="form-control form-control-lg"
-                                                                    value="<?= htmlspecialchars((string)$progresso, ENT_QUOTES, 'UTF-8') ?>"
-                                                                    required
-                                                                >
-
-                                                                <span class="input-group-text fw-bold">
-                                                                    %
-                                                                </span>
-                                                            </div>
-                                                        </div>
-
-                                                        <div class="form-check form-switch mb-2">
-                                                            <input
-                                                                class="form-check-input"
-                                                                type="checkbox"
-                                                                name="concluido"
-                                                                value="1"
-                                                                id="chkConcluido<?= (int)$etapa['id'] ?>"
-                                                                <?= $etapa['concluido'] ? 'checked' : '' ?>
-                                                            >
-
-                                                            <label
-                                                                class="form-check-label fw-bold"
-                                                                for="chkConcluido<?= (int)$etapa['id'] ?>"
-                                                            >
-                                                                Marcar Etapa como 100% Concluída
-                                                            </label>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="modal-footer">
-                                                        <button
-                                                            type="button"
-                                                            class="btn btn-secondary"
-                                                            data-bs-dismiss="modal"
-                                                        >
-                                                            Cancelar
-                                                        </button>
-
-                                                        <button
-                                                            type="submit"
-                                                            class="btn btn-primary fw-bold"
-                                                        >
-                                                            Salvar Medição
-                                                        </button>
-                                                    </div>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                <?php endif; ?>
-            </div>
-        </div>
-
-        <div class="tab-pane fade" id="fotos-content">
-            <div class="card border-0 shadow-sm p-3 p-md-4 mb-4">
-                <h5 class="fw-bold text-dark mb-3">
-                    <i class="bi bi-cloud-upload me-2 text-primary"></i>
-                    Adicionar Foto da Evolução
-                </h5>
-
-                <form
-                    method="POST"
-                    action=""
-                    enctype="multipart/form-data"
-                    class="row g-3 align-items-end"
-                >
-                    <input type="hidden" name="acao" value="upload_foto">
-
-                    <div class="col-md-5">
-                        <label class="form-label fw-bold">
-                            Selecione a Imagem *
-                        </label>
-
-                        <input
-                            type="file"
-                            name="foto"
-                            class="form-control"
-                            accept=".jpg,.jpeg,.png,.webp"
-                            required
-                        >
-                    </div>
-
-                    <div class="col-md-5">
-                        <label class="form-label fw-bold">
-                            Legenda / Observação
-                        </label>
-
-                        <input
-                            type="text"
-                            name="descricao_foto"
-                            class="form-control"
-                            maxlength="255"
-                            placeholder="Ex: Concretagem das sapatas concluída"
-                        >
-                    </div>
-
-                    <div class="col-md-2">
-                        <button
-                            type="submit"
-                            class="btn btn-primary fw-bold w-100"
-                        >
-                            <i class="bi bi-upload me-1"></i>
-                            Enviar
-                        </button>
-                    </div>
-                </form>
-            </div>
-
-            <div class="card border-0 shadow-sm p-3 p-md-4">
-                <h5 class="fw-bold text-dark mb-3">
-                    <i class="bi bi-images me-2 text-primary"></i>
-                    Fotos Anexadas
-                </h5>
-
-                <?php if (empty($fotos)): ?>
-                    <div class="alert alert-info text-center m-0">
-                        Nenhuma foto adicionada à galeria até o momento.
-                    </div>
-                <?php else: ?>
-                    <div class="row g-3">
-                        <?php foreach ($fotos as $foto): ?>
-                            <?php $nomeFoto = basename($foto['caminho_foto']); ?>
-
-                            <div class="col-6 col-md-4 col-lg-3">
-                                <div class="card h-100 border-0 shadow-sm overflow-hidden">
-                                    <a
-                                        href="/uploads/fotos/<?= rawurlencode($nomeFoto) ?>"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                    >
-                                        <img
-                                            src="/uploads/fotos/<?= rawurlencode($nomeFoto) ?>"
-                                            class="card-img-top"
-                                            style="height: 180px; object-fit: cover;"
-                                            alt="Foto da Obra"
-                                            loading="lazy"
-                                        >
-                                    </a>
-
-                                    <div class="card-body p-2 d-flex flex-column justify-content-between">
-                                        <small class="text-muted d-block mb-1 text-truncate">
-                                            <?= htmlspecialchars($foto['descricao'] ?? 'Sem legenda', ENT_QUOTES, 'UTF-8') ?>
-                                        </small>
-
-                                        <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top">
-                                            <small class="text-muted">
-                                                <i class="bi bi-calendar3 me-1"></i>
-                                                <?= date('d/m/Y', strtotime($foto['criado_em'])) ?>
-                                            </small>
-
-                                            <a
-                                                href="/gerenciar-obra?id=<?= $obraId ?>&del_foto=<?= (int)$foto['id'] ?>"
-                                                class="btn btn-sm btn-outline-danger p-1 line-height-1"
-                                                onclick="return confirm('Deseja realmente excluir esta foto?')"
-                                                title="Excluir Foto"
-                                            >
-                                                <i class="bi bi-trash"></i>
-                                            </a>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
                         <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
+
+                    </select>
+
+                </div>
+
+                <div class="col-md-6">
+
+                    <label class="form-label fw-bold">
+                        Modelo de Cronograma (Opcional)
+                    </label>
+
+                    <select
+                        name="modelo_id"
+                        class="form-select"
+                    >
+                        <option value="">
+                            Sem modelo (cadastrar etapas manualmente)
+                        </option>
+
+                        <?php foreach ($modelos as $modelo): ?>
+
+                            <option
+                                value="<?= (int)$modelo['id'] ?>"
+                                <?= (
+                                    isset($_POST['modelo_id']) &&
+                                    (int)$_POST['modelo_id'] === (int)$modelo['id']
+                                ) ? 'selected' : '' ?>
+                            >
+                                <?= htmlspecialchars(
+                                    $modelo['nome'],
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>
+                            </option>
+
+                        <?php endforeach; ?>
+
+                    </select>
+
+                </div>
+
+                <div class="col-12">
+
+                    <label class="form-label fw-bold">
+                        Endereço Completo da Obra *
+                    </label>
+
+                    <input
+                        type="text"
+                        name="endereco_obra"
+                        class="form-control"
+                        placeholder="Rua, Número, Bairro, Cidade"
+                        value="<?= htmlspecialchars(
+                            $_POST['endereco_obra'] ?? '',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                        required
+                    >
+
+                </div>
+
             </div>
+
         </div>
 
-        <div class="tab-pane fade" id="docs-content">
-            <div class="card border-0 shadow-sm p-3 p-md-4 mb-4">
-                <h5 class="fw-bold text-dark mb-3">
-                    <i class="bi bi-file-earmark-plus me-2 text-primary"></i>
-                    Anexar Novo Comprovante / Nota Fiscal
-                </h5>
+        <div class="card border-0 shadow-sm p-3 p-md-4 mb-4">
 
-                <form
-                    method="POST"
-                    action=""
-                    enctype="multipart/form-data"
-                    class="row g-3 align-items-end"
-                >
-                    <input type="hidden" name="acao" value="upload_documento">
+            <h5 class="fw-bold text-dark mb-3">
+                <i class="bi bi-cash-stack me-2 text-primary"></i>
+                Valores Físico-Financeiros
+            </h5>
 
-                    <div class="col-md-5">
-                        <label class="form-label fw-bold">
-                            Nome / Descrição do Documento *
-                        </label>
+            <div class="row g-3">
 
-                        <input
-                            type="text"
-                            name="nome_documento"
-                            class="form-control"
-                            maxlength="255"
-                            placeholder="Ex: Nota Fiscal de Cimento - Etapa 2"
-                            required
-                        >
+                <div class="col-md-6 col-lg-4">
+
+                    <label class="form-label fw-bold">
+                        Valor Total do Imóvel *
+                    </label>
+
+                    <input
+                        type="text"
+                        name="valor_total"
+                        id="valor_total"
+                        class="form-control mask-money"
+                        value="<?= htmlspecialchars(
+                            $_POST['valor_total'] ?? '0,00',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                        required
+                    >
+
+                </div>
+
+                <div class="col-md-6 col-lg-4">
+
+                    <label class="form-label fw-bold">
+                        Financiamento (Caixa - 80%)
+                    </label>
+
+                    <input
+                        type="text"
+                        name="valor_financiamento"
+                        id="valor_financiamento"
+                        class="form-control mask-money"
+                        value="<?= htmlspecialchars(
+                            $_POST['valor_financiamento'] ?? '0,00',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                    >
+
+                </div>
+
+                <div class="col-md-6 col-lg-4">
+
+                    <label class="form-label fw-bold">
+                        Subsídio MCMV
+                    </label>
+
+                    <input
+                        type="text"
+                        name="valor_subsidio"
+                        id="valor_subsidio"
+                        class="form-control mask-money"
+                        value="<?= htmlspecialchars(
+                            $_POST['valor_subsidio'] ?? '0,00',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                    >
+
+                </div>
+
+                <div class="col-md-6 col-lg-6">
+
+                    <label class="form-label fw-bold">
+                        Entrada em Dinheiro (Recurso Próprio)
+                    </label>
+
+                    <input
+                        type="text"
+                        name="valor_entrada"
+                        id="valor_entrada"
+                        class="form-control mask-money"
+                        value="<?= htmlspecialchars(
+                            $_POST['valor_entrada'] ?? '0,00',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                    >
+
+                    <small class="text-muted">
+                        Calculada descontando o subsídio
+                        (ou ajustada manualmente)
+                    </small>
+
+                </div>
+
+                <div class="col-md-6 col-lg-6">
+
+                    <label class="form-label fw-bold">
+                        Valor do Terreno
+                    </label>
+
+                    <input
+                        type="text"
+                        name="valor_terreno"
+                        id="valor_terreno"
+                        class="form-control mask-money"
+                        value="<?= htmlspecialchars(
+                            $_POST['valor_terreno'] ?? '0,00',
+                            ENT_QUOTES,
+                            'UTF-8'
+                        ) ?>"
+                    >
+
+                </div>
+
+                <div class="col-12 mt-3">
+
+                    <div class="p-3 bg-light rounded border">
+
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+
+                            <span class="text-muted">
+                                Total de Recursos da Obra:
+                            </span>
+
+                            <span
+                                class="fw-bold text-dark"
+                                id="total_recursos_display"
+                            >
+                                R$ 0,00
+                            </span>
+
+                        </div>
+
+                        <hr class="my-2">
+
+                        <div class="d-flex justify-content-between align-items-center">
+
+                            <span class="fw-bold text-dark fs-5">
+                                Sobra Destinada à Construção:
+                            </span>
+
+                            <h3
+                                class="fw-bold text-success m-0"
+                                id="sobra_display"
+                            >
+                                R$ 0,00
+                            </h3>
+
+                        </div>
+
                     </div>
 
-                    <div class="col-md-5">
-                        <label class="form-label fw-bold">
-                            Arquivo *
-                        </label>
+                </div>
 
-                        <input
-                            type="file"
-                            name="documento"
-                            class="form-control"
-                            accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx,.zip"
-                            required
-                        >
-
-                        <small class="text-muted">
-                            Máximo: 20 MB.
-                        </small>
-                    </div>
-
-                    <div class="col-md-2">
-                        <button
-                            type="submit"
-                            class="btn btn-primary fw-bold w-100"
-                        >
-                            <i class="bi bi-paperclip me-1"></i>
-                            Anexar
-                        </button>
-                    </div>
-                </form>
             </div>
 
-            <div class="card border-0 shadow-sm p-3 p-md-4">
-                <h5 class="fw-bold text-dark mb-3">
-                    <i class="bi bi-files me-2 text-primary"></i>
-                    Documentos Anexados
-                </h5>
-
-                <?php if (empty($documentos)): ?>
-                    <div class="alert alert-info text-center m-0">
-                        Nenhum documento ou comprovante anexado.
-                    </div>
-                <?php else: ?>
-                    <div class="table-responsive">
-                        <table class="table align-middle table-hover">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>Documento</th>
-                                    <th>Data de Envio</th>
-                                    <th class="text-end" style="width: 150px;">
-                                        Ações
-                                    </th>
-                                </tr>
-                            </thead>
-
-                            <tbody>
-                                <?php foreach ($documentos as $documento): ?>
-                                    <?php $nomeArquivo = basename($documento['caminho_arquivo']); ?>
-
-                                    <tr>
-                                        <td class="fw-bold text-dark">
-                                            <i class="bi bi-file-earmark-text text-primary me-2 fs-5"></i>
-                                            <?= htmlspecialchars($documento['nome_documento'], ENT_QUOTES, 'UTF-8') ?>
-                                        </td>
-
-                                        <td class="small text-muted">
-                                            <?= date('d/m/Y H:i', strtotime($documento['criado_em'])) ?>
-                                        </td>
-
-                                        <td class="text-end">
-                                            <a
-                                                href="/uploads/documentos/<?= rawurlencode($nomeArquivo) ?>"
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                class="btn btn-sm btn-outline-primary me-1"
-                                                title="Visualizar / Download"
-                                            >
-                                                <i class="bi bi-download"></i>
-                                            </a>
-
-                                            <a
-                                                href="/gerenciar-obra?id=<?= $obraId ?>&del_doc=<?= (int)$documento['id'] ?>"
-                                                class="btn btn-sm btn-outline-danger"
-                                                onclick="return confirm('Deseja remover este documento?')"
-                                                title="Excluir Documento"
-                                            >
-                                                <i class="bi bi-trash"></i>
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                <?php endif; ?>
-            </div>
         </div>
-    </div>
+
+        <div class="card border-0 shadow-sm p-3 p-md-4 mb-4">
+
+            <h5 class="fw-bold text-dark mb-3">
+                <i class="bi bi-file-earmark-pdf me-2 text-primary"></i>
+                Projeto / Planta (Opcional)
+            </h5>
+
+            <div class="row g-3">
+
+                <div class="col-12">
+
+                    <input
+                        type="file"
+                        name="arquivo_projeto"
+                        class="form-control"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                    >
+
+                    <small class="text-muted">
+                        Anexe a planta ou projeto arquitetônico da obra
+                        em PDF ou imagem. Máximo: 20 MB.
+                    </small>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="col-12 mt-4 text-end">
+
+            <button
+                type="submit"
+                class="btn btn-primary fw-bold px-4 w-100 w-sm-auto"
+            >
+                <i class="bi bi-check-lg me-1"></i>
+                Criar e Gerenciar Obra
+            </button>
+
+        </div>
+
+    </form>
+
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+    function parseMoeda(valor) {
+        if (!valor) {
+            return 0;
+        }
+
+        const apenasNumeros = valor
+            .toString()
+            .replace(/\D/g, '');
+
+        if (!apenasNumeros) {
+            return 0;
+        }
+
+        return parseFloat(apenasNumeros) / 100;
+    }
+
+    function formatarMoeda(valor) {
+        return valor.toLocaleString('pt-BR', {
+            style: 'currency',
+            currency: 'BRL'
+        });
+    }
+
+    function formatarInput(valorFloat) {
+        return valorFloat.toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    const inputTotal =
+        document.getElementById('valor_total');
+
+    const inputFinanc =
+        document.getElementById('valor_financiamento');
+
+    const inputSubsidio =
+        document.getElementById('valor_subsidio');
+
+    const inputEntrada =
+        document.getElementById('valor_entrada');
+
+    const inputTerreno =
+        document.getElementById('valor_terreno');
+
+    const totalRecursosDisplay =
+        document.getElementById('total_recursos_display');
+
+    const sobraDisplay =
+        document.getElementById('sobra_display');
+
+    if (
+        !inputTotal ||
+        !inputFinanc ||
+        !inputSubsidio ||
+        !inputEntrada ||
+        !inputTerreno ||
+        !totalRecursosDisplay ||
+        !sobraDisplay
+    ) {
+        return;
+    }
+
+    let entradaEditadaManualmente = false;
+
+    function calcularValoresFinal() {
+
+        const vFinanc =
+            parseMoeda(inputFinanc.value);
+
+        const vSubsidio =
+            parseMoeda(inputSubsidio.value);
+
+        const vEntrada =
+            parseMoeda(inputEntrada.value);
+
+        const vTerreno =
+            parseMoeda(inputTerreno.value);
+
+        const recursosTotais =
+            vFinanc +
+            vSubsidio +
+            vEntrada;
+
+        totalRecursosDisplay.innerText =
+            formatarMoeda(recursosTotais);
+
+        const sobra =
+            recursosTotais -
+            vTerreno;
+
+        sobraDisplay.innerText =
+            formatarMoeda(
+                sobra > 0 ? sobra : 0
+            );
+    }
+
+    function recalcularEntradaESobra() {
+
+        const vTotal =
+            parseMoeda(inputTotal.value);
+
+        const vSubsidio =
+            parseMoeda(inputSubsidio.value);
+
+        if (vTotal > 0) {
+
+            const vFinanc =
+                vTotal * 0.80;
+
+            inputFinanc.value =
+                formatarInput(vFinanc);
+
+            const entradaBrutaNecessaria =
+                vTotal - vFinanc;
+
+            if (!entradaEditadaManualmente) {
+
+                const entradaEmDinheiro =
+                    Math.max(
+                        0,
+                        entradaBrutaNecessaria -
+                        vSubsidio
+                    );
+
+                inputEntrada.value =
+                    formatarInput(
+                        entradaEmDinheiro
+                    );
+            }
+        }
+
+        calcularValoresFinal();
+    }
+
+    inputTotal.addEventListener(
+        'input',
+        function () {
+            entradaEditadaManualmente = false;
+            recalcularEntradaESobra();
+        }
+    );
+
+    inputSubsidio.addEventListener(
+        'input',
+        recalcularEntradaESobra
+    );
+
+    inputEntrada.addEventListener(
+        'focus',
+        function () {
+            entradaEditadaManualmente = true;
+        }
+    );
+
+    inputEntrada.addEventListener(
+        'input',
+        calcularValoresFinal
+    );
+
+    inputTerreno.addEventListener(
+        'input',
+        calcularValoresFinal
+    );
+
+    inputFinanc.addEventListener(
+        'input',
+        calcularValoresFinal
+    );
+
+    calcularValoresFinal();
+});
+</script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

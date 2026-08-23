@@ -1,32 +1,128 @@
 <?php
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
+
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+/*
+|--------------------------------------------------------------------------
+| Se já estiver logado, redireciona para a área correspondente
+|--------------------------------------------------------------------------
+*/
+if (!empty($_SESSION['usuario_id'])) {
+
+    if (($_SESSION['usuario_tipo'] ?? '') === 'cliente') {
+        header('Location: /portal');
+        exit;
+    }
+
+    header('Location: /dashboard');
+    exit;
+}
+
 $erro = '';
 
+/*
+|--------------------------------------------------------------------------
+| Processar login
+|--------------------------------------------------------------------------
+*/
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $cpf   = preg_replace('/[^0-9]/', '', $_POST['cpf'] ?? '');
+
+    $cpf = trim($_POST['cpf'] ?? '');
     $senha = $_POST['senha'] ?? '';
 
-    if (empty($cpf) || empty($senha)) {
-        $erro = 'Por favor, preencha todos os campos.';
+    if ($cpf === '' || $senha === '') {
+
+        $erro = 'Informe o CPF e a senha.';
+
     } else {
-        $stmt = $pdo->prepare("SELECT * FROM usuarios WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') = ? AND tipo = 'cliente' LIMIT 1");
-        $stmt->execute([$cpf]);
-        $cliente = $stmt->fetch();
 
-        if ($cliente && password_verify($senha, $cliente['senha'])) {
-            session_regenerate_id(true);
+        /*
+        |--------------------------------------------------------------------------
+        | Normalizar CPF
+        |--------------------------------------------------------------------------
+        */
+        $cpfLimpo = preg_replace('/[^0-9]/', '', $cpf);
 
-            $_SESSION['usuario_id']   = $cliente['id'];
-            $_SESSION['usuario_nome'] = $cliente['nome'];
-            $_SESSION['usuario_tipo'] = $cliente['tipo'];
+        if (strlen($cpfLimpo) !== 11) {
 
-            header('Location: /portal');
-            exit;
+            $erro = 'Informe um CPF válido.';
+
         } else {
-            $erro = 'CPF ou senha incorretos.';
+
+            /*
+            |--------------------------------------------------------------------------
+            | Buscar usuário pelo CPF
+            |--------------------------------------------------------------------------
+            */
+            $stmt = $pdo->prepare("
+                SELECT
+                    id,
+                    nome,
+                    cpf,
+                    senha,
+                    tipo
+                FROM usuarios
+                WHERE REPLACE(
+                    REPLACE(
+                        REPLACE(cpf, '.', ''),
+                        '-',
+                        ''
+                    ),
+                    ' ',
+                    ''
+                ) = ?
+                LIMIT 1
+            ");
+
+            $stmt->execute([$cpfLimpo]);
+
+            $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validar senha
+            |--------------------------------------------------------------------------
+            */
+            if (
+                !$usuario ||
+                !password_verify($senha, $usuario['senha'])
+            ) {
+
+                $erro = 'CPF ou senha inválidos.';
+
+            } else {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Regenerar sessão após login
+                |--------------------------------------------------------------------------
+                */
+                session_regenerate_id(true);
+
+                $_SESSION['usuario_id'] = (int)$usuario['id'];
+                $_SESSION['usuario_nome'] = $usuario['nome'];
+                $_SESSION['usuario_cpf'] = $usuario['cpf'];
+                $_SESSION['usuario_tipo'] = $usuario['tipo'];
+
+                /*
+                |--------------------------------------------------------------------------
+                | Redirecionamento
+                |--------------------------------------------------------------------------
+                */
+                if ($usuario['tipo'] === 'cliente') {
+
+                    header('Location: /portal');
+                    exit;
+
+                }
+
+                header('Location: /dashboard');
+                exit;
+            }
         }
     }
 }
@@ -34,49 +130,143 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
-<div class="container d-flex flex-grow-1 align-items-center justify-content-center py-4 py-md-5">
-    <div class="card card-login p-3 p-sm-4 w-100">
-        <div class="text-center mb-4">
-            <i class="bi bi-house-heart-fill text-primary display-4"></i>
-            <h4 class="fw-bold mt-2">Portal do Cliente</h4>
-            <p class="text-muted small">Acompanhe a evolução da sua obra</p>
+<div class="container my-4 my-md-5">
+
+    <div class="row justify-content-center">
+
+        <div class="col-12 col-sm-10 col-md-6 col-lg-4">
+
+            <div class="card border-0 shadow-sm">
+
+                <div class="card-body p-4 p-md-5">
+
+                    <!-- Cabeçalho -->
+                    <div class="text-center mb-4">
+
+                        <div class="mb-3">
+
+                            <span
+                                class="d-inline-flex align-items-center justify-content-center bg-primary bg-opacity-10 text-primary rounded-circle"
+                                style="width: 70px; height: 70px;"
+                            >
+                                <i class="bi bi-person-lock fs-2"></i>
+                            </span>
+
+                        </div>
+
+                        <h3 class="fw-bold m-0">
+                            Acesso ao Sistema
+                        </h3>
+
+                        <p class="text-muted small mb-0 mt-1">
+                            Entre com seus dados para continuar
+                        </p>
+
+                    </div>
+
+                    <!-- Erro -->
+                    <?php if ($erro !== ''): ?>
+
+                        <div
+                            class="alert alert-danger alert-dismissible fade show border-0"
+                            role="alert"
+                        >
+
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+
+                            <?= htmlspecialchars(
+                                $erro,
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+
+                            <button
+                                type="button"
+                                class="btn-close"
+                                data-bs-dismiss="alert"
+                                aria-label="Fechar"
+                            ></button>
+
+                        </div>
+
+                    <?php endif; ?>
+
+                    <!-- Formulário -->
+                    <form
+                        method="POST"
+                        action=""
+                        autocomplete="on"
+                    >
+
+                        <!-- CPF -->
+                        <div class="mb-3">
+
+                            <label
+                                for="cpf"
+                                class="form-label fw-bold"
+                            >
+                                CPF
+                            </label>
+
+                            <input
+                                type="text"
+                                id="cpf"
+                                name="cpf"
+                                class="form-control form-control-lg mask-cpf"
+                                inputmode="numeric"
+                                autocomplete="username"
+                                value="<?= htmlspecialchars(
+                                    $cpf ?? '',
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>"
+                                maxlength="14"
+                                required
+                                autofocus
+                            >
+
+                        </div>
+
+                        <!-- Senha -->
+                        <div class="mb-4">
+
+                            <label
+                                for="senha"
+                                class="form-label fw-bold"
+                            >
+                                Senha
+                            </label>
+
+                            <input
+                                type="password"
+                                id="senha"
+                                name="senha"
+                                class="form-control form-control-lg"
+                                autocomplete="current-password"
+                                required
+                            >
+
+                        </div>
+
+                        <!-- Botão -->
+                        <button
+                            type="submit"
+                            class="btn btn-primary btn-lg fw-bold w-100"
+                        >
+                            <i class="bi bi-box-arrow-in-right me-1"></i>
+                            Entrar
+                        </button>
+
+                    </form>
+
+                </div>
+
+            </div>
+
         </div>
 
-        <?php if ($erro): ?>
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                <?= htmlspecialchars($erro) ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        <?php endif; ?>
-
-        <form method="POST" action="">
-            <div class="mb-3">
-                <label class="form-label fw-bold">CPF</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-card-text"></i></span>
-                    <input type="text" name="cpf" class="form-control form-control-lg fs-6 mask-cpf" placeholder="000.000.000-00" inputmode="numeric" required autofocus>
-                </div>
-            </div>
-
-            <div class="mb-4">
-                <label class="form-label fw-bold">Senha</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-key"></i></span>
-                    <input type="password" name="senha" class="form-control form-control-lg fs-6" placeholder="••••••" required>
-                </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary w-100 fw-bold py-2 shadow-sm">
-                <i class="bi bi-box-arrow-in-right me-1"></i> Acessar Minha Obra
-            </button>
-        </form>
-
-        <div class="text-center mt-4 pt-2 border-top">
-            <a href="/hlogin" class="text-decoration-none small text-muted">
-                <i class="bi bi-shield-lock me-1"></i> Área do Administrador
-            </a>
-        </div>
     </div>
+
 </div>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

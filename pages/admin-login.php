@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -23,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
 
         $stmt->execute([$usuario]);
-        $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+        $admin = $stmt->fetch();
 
         if ($admin && password_verify($senha, $admin['senha'])) {
             session_regenerate_id(true);
@@ -45,7 +45,6 @@ require_once __DIR__ . '/../includes/header.php';
 
 <div class="container d-flex flex-grow-1 align-items-center justify-content-center py-4 py-md-5">
     <div class="card card-login p-3 p-sm-4 w-100">
-
         <div class="text-center mb-4">
             <i class="bi bi-shield-lock-fill text-primary display-4"></i>
 
@@ -58,20 +57,23 @@ require_once __DIR__ . '/../includes/header.php';
             </p>
         </div>
 
-        <?php if ($erro !== ''): ?>
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <?php if ($erro): ?>
+            <div
+                class="alert alert-danger alert-dismissible fade show"
+                role="alert"
+            >
                 <?= htmlspecialchars($erro, ENT_QUOTES, 'UTF-8') ?>
 
                 <button
                     type="button"
                     class="btn-close"
                     data-bs-dismiss="alert"
+                    aria-label="Fechar"
                 ></button>
             </div>
         <?php endif; ?>
 
         <form method="POST" action="">
-
             <div class="mb-3">
                 <label class="form-label fw-bold">
                     Usuário
@@ -87,10 +89,10 @@ require_once __DIR__ . '/../includes/header.php';
                         name="usuario"
                         class="form-control form-control-lg fs-6"
                         placeholder="admin"
-                        value="<?= htmlspecialchars($_POST['usuario'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                         required
                         autofocus
                         autocomplete="username"
+                        maxlength="100"
                     >
                 </div>
             </div>
@@ -123,7 +125,6 @@ require_once __DIR__ . '/../includes/header.php';
                 <i class="bi bi-box-arrow-in-right me-1"></i>
                 Entrar no Painel
             </button>
-
         </form>
 
         <div class="text-center mt-4 pt-2 border-top">
@@ -135,7 +136,6 @@ require_once __DIR__ . '/../includes/header.php';
                 Ir para Login de Clientes
             </a>
         </div>
-
     </div>
 </div>
 
